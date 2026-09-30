@@ -213,6 +213,10 @@ static File openPolicyRead(FILESYSTEM* fs) {
 
 static File openPolicyWrite(FILESYSTEM* fs) {
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  // FILE_O_WRITE does not truncate: it opens read/write and seeks to the end,
+  // so without the remove every save appended another copy of the policy and
+  // load() stopped at the second "ER1" (same pattern as IdentityStore::save).
+  fs->remove(EDGE_POLICY_FILE);
   return fs->open(EDGE_POLICY_FILE, FILE_O_WRITE);
 #elif defined(RP2040_PLATFORM)
   return fs->open(EDGE_POLICY_FILE, "w");
