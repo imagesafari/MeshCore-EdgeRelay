@@ -226,6 +226,18 @@ static File openPolicyWrite(FILESYSTEM* fs) {
 }
 
 bool EdgePolicy::load(FILESYSTEM* fs) {
+  if (parsePolicy(fs)) return true;
+  // Any parse error invalidates the whole policy: drop whatever was parsed
+  // before the error too, so a later save() can't persist a half-read file.
+  _valid = false;
+  _num_owners = 0;
+  _num_channels = 0;
+  _mirror_adverts = false;
+  _fwd_acks = false;
+  return false;
+}
+
+bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
   _valid = false;
   _num_owners = 0;
   _num_channels = 0;

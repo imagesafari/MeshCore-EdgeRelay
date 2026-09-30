@@ -58,6 +58,8 @@ class EdgePolicy {
   uint32_t _rl_start_ms;
   uint16_t _rl_count;
 
+  bool parsePolicy(FILESYSTEM* fs);
+
 public:
   EdgePolicy();
 
