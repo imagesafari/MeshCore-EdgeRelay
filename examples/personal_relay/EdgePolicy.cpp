@@ -11,6 +11,8 @@ EdgePolicy::EdgePolicy() {
   _rl_count = 0;
   _tr_start_ms = 0;
   _tr_count = 0;
+  _wd_start_ms = 0;
+  _wd_count = 0;
   memset(_owner_keys, 0, sizeof(_owner_keys));
   memset(_channel_hashes, 0, sizeof(_channel_hashes));
   memset(_wardrive_hashes, 0, sizeof(_wardrive_hashes));
@@ -111,6 +113,16 @@ bool EdgePolicy::tryLocalCopy(uint32_t now_ms) {
   }
   if (_rl_count >= EDGE_LOCAL_COPY_MAX) return false;
   _rl_count++;
+  return true;
+}
+
+bool EdgePolicy::tryWardriveEcho(uint32_t now_ms) {
+  if (now_ms - _wd_start_ms >= EDGE_WARDRIVE_ECHO_WINDOW_MS) {
+    _wd_start_ms = now_ms;
+    _wd_count = 0;
+  }
+  if (_wd_count >= EDGE_WARDRIVE_ECHO_RATE_MAX) return false;
+  _wd_count++;
   return true;
 }
 

@@ -26,6 +26,10 @@
 #define EDGE_LOCAL_COPY_MAX    30
 #define EDGE_LOCAL_COPY_WINDOW_MS  60000UL
 
+// Wardrive echo rate limit (EdgeWardrive.h): its own budget, so wardriving never starves owner local copies.
+#define EDGE_WARDRIVE_ECHO_RATE_MAX  24
+#define EDGE_WARDRIVE_ECHO_WINDOW_MS 60000UL
+
 // Trace rate limit: at most this many traces relayed per window (a trace names no sender, so anyone who
 // knows this node's hash could route one through it; this caps that).
 #define EDGE_TRACE_MAX         10
@@ -79,6 +83,9 @@ class EdgePolicy {
   // and for relayed traces
   uint32_t _tr_start_ms;
   uint16_t _tr_count;
+  // and for wardrive echoes handed down
+  uint32_t _wd_start_ms;
+  uint16_t _wd_count;
 
   bool parsePolicy(FILESYSTEM* fs);
 
@@ -127,4 +134,6 @@ public:
   bool tryLocalCopy(uint32_t now_ms);
   // Rate limiter: call once per new trace about to be relayed.
   bool tryTrace(uint32_t now_ms);
+  // Rate limiter: call once per wardrive echo about to be handed down.
+  bool tryWardriveEcho(uint32_t now_ms);
 };

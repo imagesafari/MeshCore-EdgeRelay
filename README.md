@@ -90,10 +90,17 @@ Notes:
     ignores those echoes, having already sent the packet; handing them down lets the phone credit
     repeaters only the car's antenna reaches.
   - In MeshMapper, set the car as your **CARpeater**: it strips the car from the path and credits the next
-    repeater. Without that setting, the strong signal from the car trips MeshMapper's "carpeater" check
-    and the echo is ignored.
+    repeater. Without that setting MeshMapper reads the copy as an ordinary multi-hop echo: at −30 dBm or
+    stronger (likely, in the car) it drops it as a car repeater; weaker, it shows it credited to the last
+    hop with the car link's signal, and does not upload it.
   - The copy goes no further: a direct packet is retransmitted only by the node named first (the car),
-    and only if that node has not seen it. Echoes of posts the car did not send on are dropped.
+    and only if that node has not seen it. A post is remembered only once the car actually sends it on
+    (every forwarding check passed, region scope included), so echoes of posts it did not send on are
+    dropped.
+  - Hand-downs have their own rate limit (24 a minute), separate from the 30 a minute for owners' local
+    copies, so wardriving never starves delivery of your messages.
+  - **Downgrading:** firmware older than this treats a `wardrive` line in `/edge_policy` as unknown and
+    boots receive-only (fail closed). Run `edge wardrive del 81` before flashing an older build.
   - A wardriving channel takes precedence over the same hash in `chan`. Like a configured channel, it
     carries anyone's zero-hop post on it, not only an owner's: a channel post names no sender.
 - App login and remote administration are allowed, but only from direct radio
@@ -172,8 +179,9 @@ car extends it, and have MeshMapper credit the real repeaters, not the car.
   node hears directly. (A trace that names the car first, from another tool, is relayed.)
 - `edge status` shows `wde:` (echoes handed down) climbing while you wardrive.
 
-Without the CARpeater setting, MeshMapper sees echoes arriving at the car's very strong signal and
-drops them as a likely car repeater, so nothing is credited through the car.
+Without the CARpeater setting, echoes handed down by the car are not uploaded: at the car's usual in-cabin
+signal (−30 dBm or stronger) MeshMapper drops them as a likely car repeater; weaker, it shows them in its
+log against the last hop but does not upload them.
 
 ## Build and flash
 

@@ -459,7 +459,17 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   // did not approve, even if it somehow reached stock handling.
   uint8_t self_hash[EDGE_SELF_HASH_MAX];
   self_id.copyHashTo(self_hash, sizeof(self_hash));
-  return edge_policy.checkForward(packet, self_hash, sizeof(self_hash));
+  if (!edge_policy.checkForward(packet, self_hash, sizeof(self_hash))) return false;
+  // A wardriving post going out (every gate above passed: region, hop limit, loop): its echoes may come back
+  // down (handWardriveEchoDown). Remembered here, not on receipt, so a post we do not send on never is.
+  uint8_t pt = packet->getPayloadType();
+  if (packet->isRouteFlood() && packet->getPathHashCount() == 0 &&
+      (pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && edge_policy.isWardrive(packet->payload[0])) {
+    uint8_t key[MAX_HASH_SIZE];
+    packet->calculatePacketHash(key);
+    wardrive_ring.remember(key, millis());
+  }
+  return true;
 }
 
 const char *MyMesh::getLogDateTime() {
@@ -646,14 +656,6 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
     } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;
-      // a wardriving post about to go out for the first time: its echoes may come back down
-      uint8_t pt = pkt->getPayloadType();
-      if ((pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && pkt->payload_len >= 1 &&
-          edge_policy.isWardrive(pkt->payload[0]) && !_prefs.disable_fwd && !getTables()->wasSeen(pkt)) {
-        uint8_t key[MAX_HASH_SIZE];
-        pkt->calculatePacketHash(key);
-        wardrive_ring.remember(key, millis());
-      }
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
       edge_stats.n_direct_fwd++;
     }
@@ -679,8 +681,8 @@ void MyMesh::handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_
   if (!wardrive_ring.takeEcho(key, millis())) return;  // not ours, too late, or enough already
   uint8_t path[MAX_PATH_SIZE], path_len;
   if (!edgeWardriveEchoPath(echo, self_hash, self_len, path, path_len)) return;
-  if (!edge_policy.tryLocalCopy(millis())) {
-    MESH_DEBUG_PRINTLN("edge: local-copy rate limit reached (wardrive echo)");
+  if (!edge_policy.tryWardriveEcho(millis())) {  // its own budget: owner deliveries keep theirs
+    MESH_DEBUG_PRINTLN("edge: wardrive echo rate limit reached");
     return;
   }
   mesh::Packet* copy = obtainNewPacket();
