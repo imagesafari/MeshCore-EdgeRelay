@@ -137,6 +137,44 @@ Configuration persists to `/edge_policy` on the device filesystem.
 Repeat for each companion you own (up to 8). Until at least one valid policy
 is saved, the node stays receive-only.
 
+#### Wardriving with MeshMapper
+
+Goal: wardrive with [MeshMapper](https://meshmapper.net) on your pocket companion while the relay in the
+car extends it, and have MeshMapper credit the real repeaters, not the car.
+
+**On the relay** (USB serial console):
+
+1. `edge owner add <your pocket companion's key>`, if you have not already; the relay needs a valid policy.
+2. `edge wardrive add 81`. `81` is the channel hash of `#wardriving`. A `chan add 81` you set earlier
+   can stay; the wardriving setting takes precedence.
+3. `get public.key`, and copy the 64 hex characters: MeshMapper needs them below.
+
+**In MeshMapper** (Settings → Wardriving → CARpeater):
+
+1. Turn on **CARpeater Filter**.
+2. **My CARpeater** → paste the relay's public key. The relay never adverts, so it will not be in
+   "Choose from repeater list"; paste it.
+   - MeshMapper shares this key with its server, so other wardrivers in your region filter the relay
+     too. That is what you want: a moving car is not fixed coverage.
+3. Leave **Disable RSSI Filter** off. Echoes through your CARpeater skip that check anyway.
+4. Wardrive in **Active** or **Hybrid** mode as usual, with your pocket companion connected.
+
+**What you get:**
+
+- **TX pings:** your `#wardriving` post goes out through the car. Echoes come back to your pocket node
+  with the path kept (`[car, R1, …]`). MeshMapper strips the car and credits `R1`, the repeater that heard
+  the car. These include repeaters only the car's antenna reaches. A stripped echo carries no SNR/RSSI:
+  MeshMapper records the repeater, not the signal.
+- **Discovery (DISC):** answered by repeaters your pocket node reaches directly. The relay answers too,
+  and MeshMapper ignores it as your CARpeater. Discovery is zero-hop by design, so the car cannot extend
+  it.
+- **Traces:** to repeaters your pocket node reaches directly, or through the car if you name the car as
+  the first hop yourself.
+- `edge status` shows `wde:` (echoes handed down) climbing while you wardrive.
+
+Without the CARpeater setting, MeshMapper sees echoes arriving at the car's very strong signal and
+drops them as a likely car repeater, so nothing is credited through the car.
+
 ## Build and flash
 
 Same as upstream. From this directory:
