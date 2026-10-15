@@ -11,6 +11,8 @@ EdgePolicy::EdgePolicy() {
   _rl_count = 0;
   _tr_start_ms = 0;
   _tr_count = 0;
+  _ack_start_ms = 0;
+  _ack_count = 0;
   _wd_start_ms = 0;
   _wd_count = 0;
   memset(_owner_keys, 0, sizeof(_owner_keys));
@@ -126,6 +128,16 @@ bool EdgePolicy::tryWardriveEcho(uint32_t now_ms) {
   return true;
 }
 
+bool EdgePolicy::tryAckForward(uint32_t now_ms) {
+  if (now_ms - _ack_start_ms >= EDGE_ACK_FWD_WINDOW_MS) {
+    _ack_start_ms = now_ms;
+    _ack_count = 0;
+  }
+  if (_ack_count >= EDGE_ACK_FWD_MAX) return false;
+  _ack_count++;
+  return true;
+}
+
 bool EdgePolicy::tryTrace(uint32_t now_ms) {
   if (now_ms - _tr_start_ms >= EDGE_TRACE_WINDOW_MS) {
     _tr_start_ms = now_ms;
@@ -195,7 +207,8 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       case PAYLOAD_TYPE_ANON_REQ: {
         // A login (to a repeater or room): [dest hash][sender's 32-byte public key][...]. Unlike other packets it
         // names its sender in full, so an owner's own, heard zero-hop, goes out like their other requests.
-        if (path_count != 0 || pkt->payload_len < 1 + PUB_KEY_SIZE) return EDGE_DROP;
+        // A login to this node itself is not one to pass on: its own zero-hop login rule decides that.
+        if (path_count != 0 || pkt->payload_len < 1 + PUB_KEY_SIZE || pkt->payload[0] == self_hash[0]) return EDGE_DROP;
         return isOwnerPubkey(&pkt->payload[1]) ? EDGE_STOCK : EDGE_DROP;
       }
       case PAYLOAD_TYPE_ACK: {
@@ -251,12 +264,14 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
         // A delivery receipt routed through us: nodes learn a route through this node only from traffic it carried,
         // which is owners' traffic, so a direct receipt naming it is an owner's (flood receipts name nobody: those
         // stay behind fwd_acks).
-        return EDGE_STOCK;
+        // A receipt is 4-6 bytes (BaseChatMesh::sendAckTo): anything longer is not one, and would make this
+        // node carry a stranger's payload. Forwards are also rate-limited (tryAckForward).
+        return pkt->payload_len >= 4 && pkt->payload_len <= EDGE_ACK_MAX_LEN ? EDGE_STOCK : EDGE_DROP;
       }
       case PAYLOAD_TYPE_MULTIPART: {
         // the multi-ACK form of the same receipt (Mesh::createMultiAck): [remaining << 4 | ACK][ack...]
-        if (pkt->payload_len < 1 || (pkt->payload[0] & 0x0F) != PAYLOAD_TYPE_ACK) return EDGE_DROP;
-        return EDGE_STOCK;
+        if (pkt->payload_len < 5 || pkt->payload_len > 1 + EDGE_ACK_MAX_LEN) return EDGE_DROP;
+        return (pkt->payload[0] & 0x0F) == PAYLOAD_TYPE_ACK ? EDGE_STOCK : EDGE_DROP;
       }
       case PAYLOAD_TYPE_ANON_REQ: {
         // an owner's login on its way to a repeater or room, by a route through us (it names its sender in full)

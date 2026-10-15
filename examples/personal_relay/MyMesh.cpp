@@ -641,7 +641,17 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       return ACTION_RELEASE;
     }
     // EDGE_STOCK: fall through to normal handling below.
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+    if (pkt->isRouteDirect() && (pkt->getPayloadType() == PAYLOAD_TYPE_ACK || pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART)) {
+      // A direct receipt naming the car: like a trace it names no sender, so it is capped (counted once).
+      if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;
+      if (!_prefs.disable_fwd && !edge_policy.tryAckForward(millis())) {
+        MESH_DEBUG_PRINTLN("edge: receipt rate limit reached");
+        getTables()->markSeen(pkt);
+        edge_stats.n_dropped++;
+        return ACTION_RELEASE;
+      }
+      if (!_prefs.disable_fwd) edge_stats.n_direct_fwd++;
+    } else if (pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
       // A copy heard again goes no further, as stock would decide; dropped here so the seen-table counts
       // the duplicate once (wasSeen() counts each hit, and stock would ask again).
       if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;

@@ -30,6 +30,11 @@
 #define EDGE_WARDRIVE_ECHO_RATE_MAX  24
 #define EDGE_WARDRIVE_ECHO_WINDOW_MS 60000UL
 
+// Direct receipts forwarded (D1): an ACK names no sender, so they are capped like traces, and bounded in size.
+#define EDGE_ACK_MAX_LEN       8
+#define EDGE_ACK_FWD_MAX       30
+#define EDGE_ACK_FWD_WINDOW_MS 60000UL
+
 // Trace rate limit: at most this many traces relayed per window (a trace names no sender, so anyone who
 // knows this node's hash could route one through it; this caps that).
 #define EDGE_TRACE_MAX         10
@@ -83,6 +88,8 @@ class EdgePolicy {
   // and for relayed traces
   uint32_t _tr_start_ms;
   uint16_t _tr_count;
+  uint32_t _ack_start_ms;  // and for direct receipts forwarded
+  uint16_t _ack_count;
   // and for wardrive echoes handed down
   uint32_t _wd_start_ms;
   uint16_t _wd_count;
@@ -134,6 +141,8 @@ public:
   bool tryLocalCopy(uint32_t now_ms);
   // Rate limiter: call once per new trace about to be relayed.
   bool tryTrace(uint32_t now_ms);
+  // Rate limiter: call once per direct receipt (ACK or multi-ACK) about to be forwarded.
+  bool tryAckForward(uint32_t now_ms);
   // Rate limiter: call once per wardrive echo about to be handed down.
   bool tryWardriveEcho(uint32_t now_ms);
 };
