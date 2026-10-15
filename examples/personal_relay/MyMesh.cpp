@@ -597,6 +597,12 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
       return ACTION_RELEASE;
     }
+    if (edge_action == EDGE_WARDRIVE_ECHO) {
+      // Usually a repeat of a post we sent on, so already seen: that is the point (EdgeWardrive.h).
+      if (!getTables()->wasSeen(pkt)) getTables()->markSeen(pkt);  // never a post we sent: nothing to hand down
+      else handWardriveEchoDown(pkt, self_hash, sizeof(self_hash));
+      return ACTION_RELEASE;
+    }
     if (edge_action == EDGE_LOCAL_COPY) {
       if (!getTables()->wasSeen(pkt)) {
         getTables()->markSeen(pkt);  // the original goes no further, and never yields a second copy
@@ -640,6 +646,14 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
     } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;
+      // a wardriving post about to go out for the first time: its echoes may come back down
+      uint8_t pt = pkt->getPayloadType();
+      if ((pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && pkt->payload_len >= 1 &&
+          edge_policy.isWardrive(pkt->payload[0]) && !_prefs.disable_fwd && !getTables()->wasSeen(pkt)) {
+        uint8_t key[MAX_HASH_SIZE];
+        pkt->calculatePacketHash(key);
+        wardrive_ring.remember(key, millis());
+      }
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
       edge_stats.n_direct_fwd++;
     }
@@ -657,6 +671,29 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     recv_pkt_region = NULL;
   }
   return Mesh::onRecvPacket(pkt);
+}
+
+void MyMesh::handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_hash, uint8_t self_len) {
+  uint8_t key[MAX_HASH_SIZE];
+  echo->calculatePacketHash(key);
+  if (!wardrive_ring.takeEcho(key, millis())) return;  // not ours, too late, or enough already
+  uint8_t path[MAX_PATH_SIZE], path_len;
+  if (!edgeWardriveEchoPath(echo, self_hash, self_len, path, path_len)) return;
+  if (!edge_policy.tryLocalCopy(millis())) {
+    MESH_DEBUG_PRINTLN("edge: local-copy rate limit reached (wardrive echo)");
+    return;
+  }
+  mesh::Packet* copy = obtainNewPacket();
+  if (!copy) {
+    MESH_DEBUG_PRINTLN("edge: packet pool empty, wardrive echo dropped");
+    return;
+  }
+  copy->header = echo->header;
+  copy->transport_codes[0] = copy->transport_codes[1] = 0;
+  copy->payload_len = echo->payload_len;
+  memcpy(copy->payload, echo->payload, echo->payload_len);
+  sendDirect(copy, path, path_len, getRetransmitDelay(copy));  // [us, R1, ...]: only we are named next
+  edge_stats.n_wardrive_echo++;
 }
 
 void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const mesh::Identity &sender,
@@ -1288,6 +1325,9 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge chan list               - list mirrored channel hashes");
     Serial.println("edge chan add <2 hex>        - add channel, save");
     Serial.println("edge chan del <2 hex>        - remove channel, save");
+    Serial.println("edge wardrive list           - list wardriving channel hashes");
+    Serial.println("edge wardrive add <2 hex>    - wardriving channel: send on, echoes back with path, save");
+    Serial.println("edge wardrive del <2 hex>    - remove wardriving channel, save");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
     strcpy(reply, "OK");
@@ -1305,12 +1345,13 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
                   (unsigned long) edge_stats.n_dropped);
     // Compact summary in the reply as well: the reply channel always reaches
     // the terminal, Serial block output may not on some setups.
-    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu trace:%lu drop:%lu",
+    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu trace:%lu drop:%lu wd:%d wde:%lu",
              edge_policy.isValid() ? 1 : 0,
              edge_policy.getNumOwners(), edge_policy.getNumChannels(),
              (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_local_copy,
              (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_trace_fwd,
-             (unsigned long) edge_stats.n_dropped);
+             (unsigned long) edge_stats.n_dropped, edge_policy.getNumWardrive(),
+             (unsigned long) edge_stats.n_wardrive_echo);
     return;
   }
 
@@ -1395,6 +1436,35 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     bool ok = is_add ? (edge_policy.addChannel(h) >= 0) : edge_policy.removeChannel(h);
     if (ok && edge_policy.save(_fs)) {
       strcpy(reply, is_add ? "OK - channel added" : "OK - channel removed");
+    } else {
+      strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
+    }
+    return;
+  }
+
+  if (strcmp(args, "wardrive list") == 0) {
+    char* p = reply;
+    p += snprintf(p, 160, "OK - wardrive(%d):", edge_policy.getNumWardrive());
+    for (int i = 0; i < edge_policy.getNumWardrive(); i++) {
+      p += snprintf(p, 160 - (p - reply), " %02x", edge_policy.getWardriveHash(i));
+    }
+    return;
+  }
+
+  if (memcmp(args, "wardrive add ", 13) == 0 || memcmp(args, "wardrive del ", 13) == 0) {
+    bool is_add = (args[9] == 'a');
+    char* hex = args + 13;
+    while (*hex == ' ') hex++;
+    char* end = hex + strlen(hex);
+    while (end > hex && *(end - 1) == ' ') *(--end) = 0;
+    uint8_t h;
+    if (strlen(hex) != 2 || !mesh::Utils::fromHex(&h, 1, hex)) {
+      strcpy(reply, "Err - bad channel hash (need 2 hex chars)");
+      return;
+    }
+    bool ok = is_add ? (edge_policy.addWardrive(h) >= 0) : edge_policy.removeWardrive(h);
+    if (ok && edge_policy.save(_fs)) {
+      strcpy(reply, is_add ? "OK - wardriving channel added" : "OK - wardriving channel removed");
     } else {
       strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
     }

@@ -3,6 +3,7 @@
 EdgePolicy::EdgePolicy() {
   _num_owners = 0;
   _num_channels = 0;
+  _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
   _valid = false;   // no policy loaded yet -> fail closed until load() succeeds
@@ -12,6 +13,7 @@ EdgePolicy::EdgePolicy() {
   _tr_count = 0;
   memset(_owner_keys, 0, sizeof(_owner_keys));
   memset(_channel_hashes, 0, sizeof(_channel_hashes));
+  memset(_wardrive_hashes, 0, sizeof(_wardrive_hashes));
 }
 
 bool EdgePolicy::isOwnerHash(uint8_t h) const {
@@ -77,6 +79,31 @@ bool EdgePolicy::removeChannel(uint8_t hash1) {
   return false;
 }
 
+bool EdgePolicy::isWardrive(uint8_t h) const {
+  for (int i = 0; i < _num_wardrive; i++) {
+    if (_wardrive_hashes[i] == h) return true;
+  }
+  return false;
+}
+
+int EdgePolicy::addWardrive(uint8_t hash1) {
+  if (isWardrive(hash1)) return -1;
+  if (_num_wardrive >= EDGE_MAX_WARDRIVE) return -1;
+  _wardrive_hashes[_num_wardrive] = hash1;
+  return _num_wardrive++;
+}
+
+bool EdgePolicy::removeWardrive(uint8_t hash1) {
+  for (int i = 0; i < _num_wardrive; i++) {
+    if (_wardrive_hashes[i] == hash1) {
+      for (int j = i; j < _num_wardrive - 1; j++) _wardrive_hashes[j] = _wardrive_hashes[j + 1];
+      _num_wardrive--;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool EdgePolicy::tryLocalCopy(uint32_t now_ms) {
   if (now_ms - _rl_start_ms >= EDGE_LOCAL_COPY_WINDOW_MS) {
     _rl_start_ms = now_ms;
@@ -135,6 +162,9 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       case PAYLOAD_TYPE_GRP_DATA: {
         if (pkt->payload_len < 1) return EDGE_DROP;
         uint8_t ch = pkt->payload[0];
+        // A wardriving channel: posts heard zero-hop go out as on an opted-in channel; echoes (path >= 1) are
+        // handed down with their path only if they are of a post we sent on (EdgeWardrive.h), else dropped.
+        if (isWardrive(ch)) return path_count == 0 ? EDGE_STOCK : EDGE_WARDRIVE_ECHO;
         if (!isChannel(ch)) return EDGE_DROP;
         // Configured channel: owner opted in. Outbound (zero-hop) group traffic
         // goes through the normal flood path; inbound floods get a local copy.
@@ -216,6 +246,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   ER1
 //   owner <64 hex chars of pubkey>
 //   chan <2 hex chars of channel hash>
+//   wardrive <2 hex chars of channel hash>
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
 // Any parse error invalidates the whole policy (fail closed).
@@ -249,6 +280,7 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
   _valid = false;
   _num_owners = 0;
   _num_channels = 0;
+  _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
   return false;
@@ -258,6 +290,7 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
   _valid = false;
   _num_owners = 0;
   _num_channels = 0;
+  _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
 
@@ -290,6 +323,12 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
             f.close(); return false;
           }
           if (addChannel(h) < 0) { f.close(); return false; }
+        } else if (memcmp(line, "wardrive ", 9) == 0) {
+          uint8_t h;
+          if (strlen(line + 9) != 2 || !mesh::Utils::fromHex(&h, 1, line + 9)) {
+            f.close(); return false;
+          }
+          if (addWardrive(h) < 0) { f.close(); return false; }
         } else if (memcmp(line, "mirror_adverts ", 15) == 0) {
           _mirror_adverts = (line[15] == '1');
         } else if (memcmp(line, "fwd_acks ", 9) == 0) {
@@ -327,6 +366,11 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   for (int i = 0; i < _num_channels; i++) {
     sprintf(hex, "%02x", _channel_hashes[i]);
     f.print("chan ");
+    f.println(hex);
+  }
+  for (int i = 0; i < _num_wardrive; i++) {
+    sprintf(hex, "%02x", _wardrive_hashes[i]);
+    f.print("wardrive ");
     f.println(hex);
   }
   f.print("mirror_adverts ");

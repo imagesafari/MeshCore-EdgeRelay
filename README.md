@@ -50,6 +50,7 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | Same, addressed to an owner (already circulating) | Re-emit locally as one zero-hop copy | — |
 | Same, unrelated to owners | Drop | Drop |
 | `GRP_TXT` / `GRP_DATA` on a configured channel | Owner's own transmission: forward; inbound: local copy | Forward if channel configured |
+| `GRP_TXT` / `GRP_DATA` on a wardriving channel | Heard zero-hop: forward; echoes of a post the car sent on: handed down with their path (below) | Forward if channel configured |
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Same |
@@ -81,6 +82,20 @@ Notes:
   sender, so it cannot be limited to owners; relayed traces are capped at 10 a minute instead. To trace
   through the car you need its hash: `get public.key` on its serial console, or a zero-hop node discovery
   near it.
+- **Wardriving (MeshMapper).** `edge wardrive add 81` (81 is `#wardriving`'s hash) makes the car behave
+  like a repeater for your wardriving pings, and pass their echoes back down to you:
+  - A post on that channel heard zero-hop is sent on, as on any configured channel.
+  - For 6 s after that, echoes of it that come back (path `[car, R1, …]`) are handed down as a **direct**
+    packet with the path kept and the car first, at most 6 per post (`EdgeWardrive.h`). A stock repeater
+    ignores those echoes, having already sent the packet; handing them down lets the phone credit
+    repeaters only the car's antenna reaches.
+  - In MeshMapper, set the car as your **CARpeater**: it strips the car from the path and credits the next
+    repeater. Without that setting, the strong signal from the car trips MeshMapper's "carpeater" check
+    and the echo is ignored.
+  - The copy goes no further: a direct packet is retransmitted only by the node named first (the car),
+    and only if that node has not seen it. Echoes of posts the car did not send on are dropped.
+  - A wardriving channel takes precedence over the same hash in `chan`. Like a configured channel, it
+    carries anyone's zero-hop post on it, not only an owner's: a channel post names no sender.
 - App login and remote administration are allowed, but only from direct radio
   range (zero-hop): the admin password is still required, and stock's
   cryptographic authentication applies to every session packet (the 1-byte
@@ -95,7 +110,7 @@ Notes:
 Over USB serial at 115200 baud (also works on the ethernet console where enabled):
 
 ```
-edge status                  - show policy + counters (incl. traces relayed)
+edge status                  - show policy + counters (incl. traces relayed, wardrive echoes handed down)
 edge owner list              - list owner pubkeys
 edge owner show <idx>        - show one owner pubkey in the reply
 edge owner add <64 hex>      - add owner, save
@@ -103,6 +118,9 @@ edge owner del <64 hex>      - remove owner, save
 edge chan list               - list mirrored channel hashes
 edge chan add <2 hex>        - add channel, save
 edge chan del <2 hex>        - remove channel, save
+edge wardrive list           - list wardriving channel hashes
+edge wardrive add <2 hex>    - wardriving channel (81 = #wardriving): send on, hand echoes back with path, save
+edge wardrive del <2 hex>    - remove wardriving channel, save
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
 ```

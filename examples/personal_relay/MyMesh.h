@@ -37,6 +37,7 @@
 #include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
 #include "EdgePolicy.h"
+#include "EdgeWardrive.h"
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
@@ -102,6 +103,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   TransportKey default_scope;
   RateLimiter discover_limiter, anon_limiter;
   EdgePolicy edge_policy;      // directional good-citizen policy for this edge relay
+  EdgeWardriveRing wardrive_ring;  // wardriving posts we sent on, whose echoes go back down (EdgeWardrive.h)
   EdgePolicyStats edge_stats;
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
@@ -232,6 +234,7 @@ public:
 
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
   void handleEdgeCommand(char* args, char* reply);
+  void handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_hash, uint8_t self_len);
   void loop();
 
 #if defined(WITH_BRIDGE)

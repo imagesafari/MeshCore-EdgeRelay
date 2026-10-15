@@ -14,6 +14,11 @@
 #define EDGE_MAX_CHANNELS  8
 #endif
 
+// Maximum number of wardriving channels (see EdgeWardrive.h).
+#ifndef EDGE_MAX_WARDRIVE
+#define EDGE_MAX_WARDRIVE  2
+#endif
+
 // Filesystem path of the persisted policy.
 #define EDGE_POLICY_FILE  "/edge_policy"
 
@@ -44,7 +49,8 @@
 enum EdgeAction {
   EDGE_STOCK,       // hand to stock Mesh::onRecvPacket()
   EDGE_LOCAL_COPY,  // re-emit payload once as zero-hop direct; drop the original
-  EDGE_DROP         // drop the packet entirely
+  EDGE_DROP,        // drop the packet entirely
+  EDGE_WARDRIVE_ECHO // an echo on a wardriving channel: hand down with its path if it is of a post we sent on
 };
 
 struct EdgePolicyStats {
@@ -53,6 +59,7 @@ struct EdgePolicyStats {
   uint32_t n_direct_fwd;    // owner-associated direct packets forwarded via stock
   uint32_t n_trace_fwd;     // traces relayed (this node was the next hop on the trace's list)
   uint32_t n_dropped;       // packets dropped by policy
+  uint32_t n_wardrive_echo; // echoes of our own wardriving uplinks handed down with their path
 };
 
 class EdgePolicy {
@@ -60,6 +67,8 @@ class EdgePolicy {
   uint8_t _num_owners;
   uint8_t _channel_hashes[EDGE_MAX_CHANNELS];
   uint8_t _num_channels;
+  uint8_t _wardrive_hashes[EDGE_MAX_WARDRIVE];
+  uint8_t _num_wardrive;
   bool _mirror_adverts;   // re-emit selected remote adverts locally (default: false)
   bool _fwd_acks;         // forward ACKs naming this node (default: false)
   bool _valid;            // false -> fail closed (receive-only)
@@ -87,6 +96,11 @@ public:
   bool removeOwner(const uint8_t pubkey[PUB_KEY_SIZE]);
   int addChannel(uint8_t hash1);                     // returns idx, or -1 if full/duplicate
   bool removeChannel(uint8_t hash1);
+  int addWardrive(uint8_t hash1);                    // returns idx, or -1 if full/duplicate
+  bool removeWardrive(uint8_t hash1);
+  uint8_t getNumWardrive() const { return _num_wardrive; }
+  uint8_t getWardriveHash(int i) const { return _wardrive_hashes[i]; }
+  bool isWardrive(uint8_t h) const;
   void setMirrorAdverts(bool v) { _mirror_adverts = v; }
   void setFwdAcks(bool v) { _fwd_acks = v; }
   bool getMirrorAdverts() const { return _mirror_adverts; }
