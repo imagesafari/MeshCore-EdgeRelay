@@ -125,11 +125,11 @@ edge owner show <idx>        - show one owner pubkey in the reply
 edge owner add <64 hex>      - add owner, save
 edge owner del <64 hex>      - remove owner, save
 edge chan list               - list mirrored channel hashes
-edge chan add <2 hex>        - add channel, save
-edge chan del <2 hex>        - remove channel, save
+edge chan add <ch>           - add channel, save (ch: Public, #name, or its 2-hex hash)
+edge chan del <ch>           - remove channel, save
 edge wardrive list           - list wardriving channel hashes
-edge wardrive add <2 hex>    - wardriving channel (81 = #wardriving): send on, hand echoes back with path, save
-edge wardrive del <2 hex>    - remove wardriving channel, save
+edge wardrive add <ch>       - wardriving channel (#wardriving): send on, hand echoes back with path, save
+edge wardrive del <ch>       - remove wardriving channel, save
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
 ```
@@ -146,6 +146,28 @@ Configuration persists to `/edge_policy` on the device filesystem.
 Repeat for each companion you own (up to 8). Until at least one valid policy
 is saved, the node stays receive-only.
 
+#### Adding channels
+
+Give the channel by name and the relay works out its hash, and says it back:
+
+```
+edge chan add Public          -> OK - channel 11 (Public) added
+edge chan add #test           -> OK - channel d9 (#test) added
+edge wardrive add #wardriving -> OK - wardriving channel 81 (#wardriving) added
+```
+
+A channel post carries one byte to say which channel it is on: the first byte of SHA-256 of the channel's
+secret key. That byte is what the relay matches, and what `chan list` shows. It is **not** the first byte of
+the key itself, which is what an app shows and the easy thing to copy by mistake: Public's key starts `8b`,
+its hash is `11`; `#test`'s key starts `9c`, its hash is `d9`. A wrong byte is accepted and simply never
+matches anything.
+
+- `Public` is the channel every companion is built with.
+- A `#name` channel's key comes from its name, so the relay can work it out. Type the name exactly as the
+  apps have it, `#` included: names are hashed as typed, so `#Test` and `#test` are different channels.
+- A private channel's hash needs its secret key, which the relay does not take: give its 2-hex hash. It is
+  the first byte of SHA-256 of the 16-byte key, or ask whoever set the channel up.
+
 #### Wardriving with MeshMapper
 
 Goal: wardrive with [MeshMapper](https://meshmapper.net) on your pocket companion while the relay in the
@@ -154,8 +176,8 @@ car extends it, and have MeshMapper credit the real repeaters, not the car.
 **On the relay** (USB serial console):
 
 1. `edge owner add <your pocket companion's key>`, if you have not already; the relay needs a valid policy.
-2. `edge wardrive add 81`. `81` is the channel hash of `#wardriving`. A `chan add 81` you set earlier
-   can stay; the wardriving setting takes precedence.
+2. `edge wardrive add #wardriving` (or `edge wardrive add 81`: `81` is its channel hash). A `chan add 81`
+   you set earlier can stay; the wardriving setting takes precedence.
 3. `get public.key`, and copy the 64 hex characters: MeshMapper needs them below.
 
 **In MeshMapper** (Settings → Wardriving → CARpeater):

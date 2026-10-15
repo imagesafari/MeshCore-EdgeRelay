@@ -1,4 +1,5 @@
 #include "MyMesh.h"
+#include "EdgeChannel.h"
 #include <algorithm>
 
 /* ------------------------------ Config -------------------------------- */
@@ -1335,11 +1336,11 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge owner add <64 hex>      - add owner, save");
     Serial.println("edge owner del <64 hex>      - remove owner, save");
     Serial.println("edge chan list               - list mirrored channel hashes");
-    Serial.println("edge chan add <2 hex>        - add channel, save");
-    Serial.println("edge chan del <2 hex>        - remove channel, save");
+    Serial.println("edge chan add <ch>           - add channel, save (ch: Public, #name, or 2-hex hash)");
+    Serial.println("edge chan del <ch>           - remove channel, save");
     Serial.println("edge wardrive list           - list wardriving channel hashes");
-    Serial.println("edge wardrive add <2 hex>    - wardriving channel: send on, echoes back with path, save");
-    Serial.println("edge wardrive del <2 hex>    - remove wardriving channel, save");
+    Serial.println("edge wardrive add <ch>       - wardriving channel (#wardriving): send on, echoes back with path, save");
+    Serial.println("edge wardrive del <ch>       - remove wardriving channel, save");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
     strcpy(reply, "OK");
@@ -1441,13 +1442,15 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     char* end = hex + strlen(hex);
     while (end > hex && *(end - 1) == ' ') *(--end) = 0;
     uint8_t h;
-    if (strlen(hex) != 2 || !mesh::Utils::fromHex(&h, 1, hex)) {
-      strcpy(reply, "Err - bad channel hash (need 2 hex chars)");
+    const char *name, *err;
+    if (!edgeChannelHash(hex, &h, &name, &err)) {
+      strcpy(reply, err);
       return;
     }
     bool ok = is_add ? (edge_policy.addChannel(h) >= 0) : edge_policy.removeChannel(h);
     if (ok && edge_policy.save(_fs)) {
-      strcpy(reply, is_add ? "OK - channel added" : "OK - channel removed");
+      snprintf(reply, 160, "OK - channel %02x%s%s%s %s", h, *name ? " (" : "", name, *name ? ")" : "",
+               is_add ? "added" : "removed");
     } else {
       strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
     }
@@ -1470,13 +1473,15 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     char* end = hex + strlen(hex);
     while (end > hex && *(end - 1) == ' ') *(--end) = 0;
     uint8_t h;
-    if (strlen(hex) != 2 || !mesh::Utils::fromHex(&h, 1, hex)) {
-      strcpy(reply, "Err - bad channel hash (need 2 hex chars)");
+    const char *name, *err;
+    if (!edgeChannelHash(hex, &h, &name, &err)) {
+      strcpy(reply, err);
       return;
     }
     bool ok = is_add ? (edge_policy.addWardrive(h) >= 0) : edge_policy.removeWardrive(h);
     if (ok && edge_policy.save(_fs)) {
-      strcpy(reply, is_add ? "OK - wardriving channel added" : "OK - wardriving channel removed");
+      snprintf(reply, 160, "OK - wardriving channel %02x%s%s%s %s", h, *name ? " (" : "", name, *name ? ")" : "",
+               is_add ? "added" : "removed");
     } else {
       strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
     }
