@@ -8,6 +8,8 @@ EdgePolicy::EdgePolicy() {
   _valid = false;   // no policy loaded yet -> fail closed until load() succeeds
   _rl_start_ms = 0;
   _rl_count = 0;
+  _tr_start_ms = 0;
+  _tr_count = 0;
   memset(_owner_keys, 0, sizeof(_owner_keys));
   memset(_channel_hashes, 0, sizeof(_channel_hashes));
 }
@@ -85,6 +87,16 @@ bool EdgePolicy::tryLocalCopy(uint32_t now_ms) {
   return true;
 }
 
+bool EdgePolicy::tryTrace(uint32_t now_ms) {
+  if (now_ms - _tr_start_ms >= EDGE_TRACE_WINDOW_MS) {
+    _tr_start_ms = now_ms;
+    _tr_count = 0;
+  }
+  if (_tr_count >= EDGE_TRACE_MAX) return false;
+  _tr_count++;
+  return true;
+}
+
 static bool isFloodRoute(uint8_t route) {
   return route == ROUTE_TYPE_FLOOD || route == ROUTE_TYPE_TRANSPORT_FLOOD;
 }
@@ -150,6 +162,11 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
   }
 
   if (isDirectRoute(route)) {
+    if (ptype == PAYLOAD_TYPE_TRACE) {
+      // A trace's path field holds SNRs, not hashes, so the next-hop rules below do not apply to it: its
+      // hops are listed in the payload (EdgeTrace.h). Relay it only when this node is the next one named.
+      return edgeTraceNextHopIsSelf(pkt, self_hash, self_hash_len) ? EDGE_STOCK : EDGE_DROP;
+    }
     if (path_count == 0) {
       // Zero-hop direct: link-local only. Allow control (e.g. discovery),
       // anonymous requests (info queries + password login), and post-login
@@ -187,7 +204,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       }
       default:
         // ANON_REQ is only allowed zero-hop (handled above); multi-hop and
-        // everything else (TRACE, CONTROL, MULTIPART, RAW_CUSTOM): drop.
+        // everything else (CONTROL, MULTIPART, RAW_CUSTOM): drop. (TRACE is handled above.)
         return EDGE_DROP;
     }
   }

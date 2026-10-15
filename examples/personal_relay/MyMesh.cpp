@@ -457,11 +457,9 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   }
   // Edge-relay final deny guard: never forward anything the directional policy
   // did not approve, even if it somehow reached stock handling.
-  uint8_t self_hash[8];
-  uint8_t hash_len = packet->getPathHashSize();
-  if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
-  self_id.copyHashTo(self_hash, hash_len);
-  return edge_policy.checkForward(packet, self_hash, hash_len);
+  uint8_t self_hash[EDGE_SELF_HASH_MAX];
+  self_id.copyHashTo(self_hash, sizeof(self_hash));
+  return edge_policy.checkForward(packet, self_hash, sizeof(self_hash));
 }
 
 const char *MyMesh::getLogDateTime() {
@@ -586,12 +584,12 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
     }
 
-    uint8_t self_hash[8];
-    uint8_t hash_len = pkt->getPathHashSize();
-    if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
-    self_id.copyHashTo(self_hash, hash_len);
+    // The classifier compares as many bytes as the packet's hop hashes need (a trace states its own size),
+    // so it gets the whole EDGE_SELF_HASH_MAX-byte prefix of our key.
+    uint8_t self_hash[EDGE_SELF_HASH_MAX];
+    self_id.copyHashTo(self_hash, sizeof(self_hash));
 
-    EdgeAction edge_action = edge_policy.classify(pkt, self_hash, hash_len);
+    EdgeAction edge_action = edge_policy.classify(pkt, self_hash, sizeof(self_hash));
     if (edge_action == EDGE_DROP) {
       if (!getTables()->wasSeen(pkt)) {
         getTables()->markSeen(pkt);
@@ -627,7 +625,17 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       return ACTION_RELEASE;
     }
     // EDGE_STOCK: fall through to normal handling below.
-    if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+      if (!getTables()->wasSeen(pkt)) {  // a copy heard again is dropped by stock without counting
+        if (!edge_policy.tryTrace(millis())) {
+          MESH_DEBUG_PRINTLN("edge: trace rate limit reached");
+          getTables()->markSeen(pkt);
+          edge_stats.n_dropped++;
+          return ACTION_RELEASE;
+        }
+        edge_stats.n_trace_fwd++;
+      }
+    } else if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
       edge_stats.n_owner_uplink++;
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
       edge_stats.n_direct_fwd++;
@@ -1288,16 +1296,18 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d\n",
                   edge_policy.getNumOwners(), edge_policy.getNumChannels(),
                   edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0);
-    Serial.printf("  uplink_fwd: %lu  local_copy: %lu  direct_fwd: %lu  dropped: %lu\n",
+    Serial.printf("  uplink_fwd: %lu  local_copy: %lu  direct_fwd: %lu  trace_fwd: %lu  dropped: %lu\n",
                   (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_local_copy,
-                  (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+                  (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_trace_fwd,
+                  (unsigned long) edge_stats.n_dropped);
     // Compact summary in the reply as well: the reply channel always reaches
     // the terminal, Serial block output may not on some setups.
-    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu drop:%lu",
+    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu trace:%lu drop:%lu",
              edge_policy.isValid() ? 1 : 0,
              edge_policy.getNumOwners(), edge_policy.getNumChannels(),
              (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_local_copy,
-             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_trace_fwd,
+             (unsigned long) edge_stats.n_dropped);
     return;
   }
 

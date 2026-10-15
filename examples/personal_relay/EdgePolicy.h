@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Mesh.h>
 #include <helpers/IdentityStore.h>   // FILESYSTEM
+#include "EdgeTrace.h"
 
 // Maximum number of owner identities (companion devices) this relay serves.
 #ifndef EDGE_MAX_OWNERS
@@ -19,6 +20,14 @@
 // Local-copy rate limit: at most this many zero-hop copies per window.
 #define EDGE_LOCAL_COPY_MAX    30
 #define EDGE_LOCAL_COPY_WINDOW_MS  60000UL
+
+// Trace rate limit: at most this many traces relayed per window (a trace names no sender, so anyone who
+// knows this node's hash could route one through it; this caps that).
+#define EDGE_TRACE_MAX         10
+#define EDGE_TRACE_WINDOW_MS   60000UL
+
+// Bytes of this node's public key prefix the callers hand to classify(): enough for any hop hash size.
+#define EDGE_SELF_HASH_MAX     8
 
 /**
  * Edge-relay packet policy.
@@ -42,6 +51,7 @@ struct EdgePolicyStats {
   uint32_t n_owner_uplink;  // owner floods forwarded via the stock path
   uint32_t n_local_copy;    // inbound floods re-emitted as local zero-hop copies
   uint32_t n_direct_fwd;    // owner-associated direct packets forwarded via stock
+  uint32_t n_trace_fwd;     // traces relayed (this node was the next hop on the trace's list)
   uint32_t n_dropped;       // packets dropped by policy
 };
 
@@ -57,6 +67,9 @@ class EdgePolicy {
   // sliding-window rate limiter for local copies
   uint32_t _rl_start_ms;
   uint16_t _rl_count;
+  // and for relayed traces
+  uint32_t _tr_start_ms;
+  uint16_t _tr_count;
 
   bool parsePolicy(FILESYSTEM* fs);
 
@@ -98,4 +111,6 @@ public:
 
   // Rate limiter: call when actually making a local copy.
   bool tryLocalCopy(uint32_t now_ms);
+  // Rate limiter: call once per new trace about to be relayed.
+  bool tryTrace(uint32_t now_ms);
 };

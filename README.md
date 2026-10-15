@@ -52,7 +52,8 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Same |
 | `ANON_REQ` | Drop | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; flood/multi-hop stays dropped) |
-| `TRACE`, `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
+| `TRACE` | — (always sent direct) | Relayed when the car is the next hop on the trace's own list, at most 10 a minute |
+| `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
 
 Notes:
@@ -70,6 +71,13 @@ Notes:
 - Dedup uses the same seen-table as stock MeshCore (hash over payload type
   + payload), so one inbound message yields at most one local copy.
 - Local copies are rate-limited (30/minute, sliding window).
+- Traces: a trace lists the hops it should visit in its payload and collects one SNR per hop in its path
+  field, so the car relays one only when it is the next hop named in that list (`EdgeTrace.h`, mirroring
+  stock `src/Mesh.cpp`). A trace carries no message and teaches no route, so this lets you measure the
+  office-to-car and car-to-repeater links without making the car transit for anything else. It names no
+  sender, so it cannot be limited to owners; relayed traces are capped at 10 a minute instead. To trace
+  through the car you need its hash: `get public.key` on its serial console, or a zero-hop node discovery
+  near it.
 - App login and remote administration are allowed, but only from direct radio
   range (zero-hop): the admin password is still required, and stock's
   cryptographic authentication applies to every session packet (the 1-byte
@@ -84,7 +92,7 @@ Notes:
 Over USB serial at 115200 baud (also works on the ethernet console where enabled):
 
 ```
-edge status                  - show policy + counters
+edge status                  - show policy + counters (incl. traces relayed)
 edge owner list              - list owner pubkeys
 edge owner show <idx>        - show one owner pubkey in the reply
 edge owner add <64 hex>      - add owner, save
