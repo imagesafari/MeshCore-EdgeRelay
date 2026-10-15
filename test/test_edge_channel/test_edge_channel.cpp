@@ -1,10 +1,18 @@
 #include <gtest/gtest.h>
 #include "../../examples/personal_relay/EdgeChannel.h"
 
-// The native build hashes with test/mocks/SHA256.h, which is not SHA-256: these tests check the derivation
-// (which bytes get hashed, in which order) against Utils::sha256 itself, and the parsing. The real values
-// (Public 11, #test d9, #wardriving 81, #Test ba) were checked on a host build with rweather/Crypto's
-// SHA256, the library the firmware uses without CC310, against Python's hashlib.
+// Runs in env:native_real_crypto, on the firmware's own SHA-256 (rweather/Crypto): test/mocks/SHA256.h would
+// give the right derivation and the classic mistake (the key's own first byte) the same answer. Expected
+// values worked out apart from the firmware, with Python's hashlib.
+
+TEST(EdgeChannel, RunsOnRealSha256) {
+  uint8_t h[4];
+  mesh::Utils::sha256(h, sizeof(h), (const uint8_t*)"abc", 3);  // FIPS 180-2 test vector: ba7816bf...
+  EXPECT_EQ(h[0], 0xba);
+  EXPECT_EQ(h[1], 0x78);
+  EXPECT_EQ(h[2], 0x16);
+  EXPECT_EQ(h[3], 0xbf);
+}
 
 static uint8_t hashOf(const char* arg, const char** name = nullptr) {
   uint8_t h = 0;
@@ -41,6 +49,7 @@ TEST(EdgeChannel, PublicIsTheHashOfItsKeyNotTheKeysFirstByte) {
   uint8_t want;
   mesh::Utils::sha256(&want, 1, EDGE_PUBLIC_KEY, 16);
   EXPECT_EQ(hashOf("Public", &name), want);
+  EXPECT_EQ(hashOf("Public"), 0x11);
   EXPECT_STREQ(name, "Public");
   EXPECT_EQ(hashOf("public"), want);
   EXPECT_EQ(EDGE_PUBLIC_KEY[0], 0x8b);  // what an app shows: the wrong byte to give
@@ -49,11 +58,13 @@ TEST(EdgeChannel, PublicIsTheHashOfItsKeyNotTheKeysFirstByte) {
 
 TEST(EdgeChannel, HashtagChannelsFromTheirNameAsTyped) {
   const char* name;
-  EXPECT_EQ(hashOf("#test", &name), hashtag("#test"));
+  EXPECT_EQ(hashOf("#test", &name), 0xd9);  // its key starts 9c: the wrong byte to give
   EXPECT_STREQ(name, "#test");
-  EXPECT_EQ(hashOf("#wardriving"), hashtag("#wardriving"));
+  EXPECT_EQ(hashOf("#test"), hashtag("#test"));
+  EXPECT_EQ(hashOf("#wardriving"), 0x81);
+  EXPECT_EQ(hashOf("#a"), 0x25);
   EXPECT_NE(hashOf("#test"), hashtag("test")) << "the # is part of what is hashed";
-  EXPECT_EQ(hashOf("#Test"), hashtag("#Test")) << "no change of case";
+  EXPECT_EQ(hashOf("#Test"), 0xba) << "no change of case";
 }
 
 TEST(EdgeChannel, RefusesWhatItCannotResolve) {
@@ -64,7 +75,7 @@ TEST(EdgeChannel, RefusesWhatItCannotResolve) {
   EXPECT_STREQ(errOf("#"), any);
   EXPECT_STREQ(errOf("#two words"), "Err - a #name has no spaces");
   EXPECT_STREQ(errOf("#abcdefghijklmnopqrstuvwxyz12345"), any);  // 32 chars: one too long
-  EXPECT_EQ(hashOf("#abcdefghijklmnopqrstuvwxyz1234"), hashtag("#abcdefghijklmnopqrstuvwxyz1234"));  // 31: fits
+  EXPECT_EQ(hashOf("#abcdefghijklmnopqrstuvwxyz1234"), 0x12);  // 31: fits
 }
 
 int main(int argc, char** argv) {
