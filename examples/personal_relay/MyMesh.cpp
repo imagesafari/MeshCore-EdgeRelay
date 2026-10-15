@@ -626,7 +626,10 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     }
     // EDGE_STOCK: fall through to normal handling below.
     if (pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
-      if (!getTables()->wasSeen(pkt)) {  // a copy heard again is dropped by stock without counting
+      // A copy heard again goes no further, as stock would decide; dropped here so the seen-table counts
+      // the duplicate once (wasSeen() counts each hit, and stock would ask again).
+      if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;
+      if (!_prefs.disable_fwd) {  // with repeat off stock sends nothing: no slot spent, nothing counted
         if (!edge_policy.tryTrace(millis())) {
           MESH_DEBUG_PRINTLN("edge: trace rate limit reached");
           getTables()->markSeen(pkt);

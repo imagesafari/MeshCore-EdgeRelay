@@ -19,10 +19,12 @@ people's traffic, and add airtime load. So this fork adds a new
 stock `simple_repeater` example, which is left untouched:
 
 - **Uplink:** forwards flood traffic that originates directly from a
-  whitelisted companion the owner configured. Nothing else goes out.
+  whitelisted companion the owner configured. No other flood goes out.
 - **Downlink:** re-emits selected inbound traffic as a single local
   zero-hop copy for nearby owners. Neighbors ignore it (direct route, empty
   path) and no return path is learned through the car.
+- **Traces:** relayed when the car is the next hop the trace names (anyone's, since a trace names no
+  sender; at most 10 a minute). They let you measure the links through the car and teach no routes.
 - **Everything else:** dropped.
 
 ## What changed vs upstream
@@ -73,7 +75,8 @@ Notes:
 - Local copies are rate-limited (30/minute, sliding window).
 - Traces: a trace lists the hops it should visit in its payload and collects one SNR per hop in its path
   field, so the car relays one only when it is the next hop named in that list (`EdgeTrace.h`, mirroring
-  stock `src/Mesh.cpp`). A trace carries no message and teaches no route, so this lets you measure the
+  stock `src/Mesh.cpp`). A trace teaches no route and carries only the sender's hop list (plus whatever payload bytes the sender
+  chose), so this lets you measure the
   office-to-car and car-to-repeater links without making the car transit for anything else. It names no
   sender, so it cannot be limited to owners; relayed traces are capped at 10 a minute instead. To trace
   through the car you need its hash: `get public.key` on its serial console, or a zero-hop node discovery
