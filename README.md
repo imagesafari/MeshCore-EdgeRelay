@@ -168,8 +168,8 @@ car extends it, and have MeshMapper credit the real repeaters, not the car.
 - **Discovery (DISC):** answered by repeaters your pocket node reaches directly. The relay answers too,
   and MeshMapper ignores it as your CARpeater. Discovery is zero-hop by design, so the car cannot extend
   it.
-- **Traces:** to repeaters your pocket node reaches directly, or through the car if you name the car as
-  the first hop yourself.
+- **Traces:** MeshMapper's targeted trace names one repeater, so it reaches only repeaters your pocket
+  node hears directly. (A trace that names the car first, from another tool, is relayed.)
 - `edge status` shows `wde:` (echoes handed down) climbing while you wardrive.
 
 Without the CARpeater setting, MeshMapper sees echoes arriving at the car's very strong signal and
