@@ -233,6 +233,9 @@ public:
   void clearStats() override;
 
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
+  // MeshCore 1.18 does not answer discovery from a node that does not advertise (simple_repeater's
+  // isHiddenNode). The edge relay never advertises (sendSelfAdvertisement), so it never answers (jon, 15 Oct).
+  bool isHiddenNode() const { return true; }
   void handleEdgeCommand(char* args, char* reply);
   void handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_hash, uint8_t self_len);
   void loop();

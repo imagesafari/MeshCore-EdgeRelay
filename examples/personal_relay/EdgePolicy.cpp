@@ -192,6 +192,12 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
         if (_mirror_adverts && path_count > 0) return EDGE_LOCAL_COPY;
         return EDGE_DROP;
       }
+      case PAYLOAD_TYPE_ANON_REQ: {
+        // A login (to a repeater or room): [dest hash][sender's 32-byte public key][...]. Unlike other packets it
+        // names its sender in full, so an owner's own, heard zero-hop, goes out like their other requests.
+        if (path_count != 0 || pkt->payload_len < 1 + PUB_KEY_SIZE) return EDGE_DROP;
+        return isOwnerPubkey(&pkt->payload[1]) ? EDGE_STOCK : EDGE_DROP;
+      }
       case PAYLOAD_TYPE_ACK: {
         // ACKs carry no attributable owner identity; default is to drop.
         return _fwd_acks ? EDGE_STOCK : EDGE_DROP;
@@ -242,11 +248,23 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
         return isChannel(pkt->payload[0]) ? EDGE_STOCK : EDGE_DROP;
       }
       case PAYLOAD_TYPE_ACK: {
-        return _fwd_acks ? EDGE_STOCK : EDGE_DROP;
+        // A delivery receipt routed through us: nodes learn a route through this node only from traffic it carried,
+        // which is owners' traffic, so a direct receipt naming it is an owner's (flood receipts name nobody: those
+        // stay behind fwd_acks).
+        return EDGE_STOCK;
+      }
+      case PAYLOAD_TYPE_MULTIPART: {
+        // the multi-ACK form of the same receipt (Mesh::createMultiAck): [remaining << 4 | ACK][ack...]
+        if (pkt->payload_len < 1 || (pkt->payload[0] & 0x0F) != PAYLOAD_TYPE_ACK) return EDGE_DROP;
+        return EDGE_STOCK;
+      }
+      case PAYLOAD_TYPE_ANON_REQ: {
+        // an owner's login on its way to a repeater or room, by a route through us (it names its sender in full)
+        if (pkt->payload_len < 1 + PUB_KEY_SIZE) return EDGE_DROP;
+        return isOwnerPubkey(&pkt->payload[1]) ? EDGE_STOCK : EDGE_DROP;
       }
       default:
-        // ANON_REQ is only allowed zero-hop (handled above); multi-hop and
-        // everything else (CONTROL, MULTIPART, RAW_CUSTOM): drop. (TRACE is handled above.)
+        // everything else (CONTROL, other MULTIPART, RAW_CUSTOM): drop. (TRACE is handled above.)
         return EDGE_DROP;
     }
   }

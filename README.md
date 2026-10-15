@@ -29,9 +29,9 @@ stock `simple_repeater` example, which is left untouched:
 
 ## What changed vs upstream
 
-All changes are confined to `examples/personal_relay/` (plus this README,
-`build.sh`, one new build environment, and one new workflow). Core protocol
-code in `src/` and the stock `simple_repeater` example are untouched.
+Based on MeshCore **1.18.0** (`repeater-v1.18.0`). All changes are confined to `examples/personal_relay/`
+(plus this README, `build.sh`, one new build environment, and one new workflow). Core protocol code in
+`src/` and the stock `simple_repeater` example are untouched.
 
 | Area | Change |
 |---|---|
@@ -53,11 +53,11 @@ code in `src/` and the stock `simple_repeater` example are untouched.
 | `GRP_TXT` / `GRP_DATA` on a wardriving channel | Heard zero-hop: forward; echoes of a post the car sent on: handed down with their path (below) | Forward if channel configured |
 | `ADVERT` from an owner | Drop (never export owner adverts) | — |
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
-| `ACK` | Drop (forwarding opt-in only, off by default) | Same |
-| `ANON_REQ` | Drop | Link-local zero-hop only: info queries, password login, and the resulting admin session from authenticated clients (stock crypto auth still enforced on every packet; flood/multi-hop stays dropped) |
+| `ACK` | Drop (forwarding opt-in only, off by default) | Forward when the car is the named next hop (a delivery receipt on an owner's route), and the multi-ACK form (`MULTIPART` wrapping an ACK) |
+| `ANON_REQ` (a login) | Forward an owner's own, heard directly: it carries the sender's full public key, checked against the owner list | Forward an owner's when the car is the named next hop. Zero-hop to the car itself: info queries, password login, and the resulting admin session (stock crypto auth still enforced) |
 | `TRACE` | — (always sent direct) | Relayed when the car is the next hop on the trace's own list, at most 10 a minute |
 | `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
-| `CONTROL` | Drop | Drop (except link-local zero-hop, e.g. discovery replies, which can't propagate) |
+| `CONTROL` | Drop | Drop. Zero-hop control is handled as stock, except that the car **does not answer node discovery**: it never advertises, and from MeshCore 1.18 a node that does not advertise is not discoverable |
 
 Notes:
 
@@ -80,8 +80,7 @@ Notes:
   chose), so this lets you measure the
   office-to-car and car-to-repeater links without making the car transit for anything else. It names no
   sender, so it cannot be limited to owners; relayed traces are capped at 10 a minute instead. To trace
-  through the car you need its hash: `get public.key` on its serial console, or a zero-hop node discovery
-  near it.
+  through the car you need its hash: `get public.key` on its serial console (it does not answer discovery).
 - **Wardriving (MeshMapper).** `edge wardrive add 81` (81 is `#wardriving`'s hash) makes the car behave
   like a repeater for your wardriving pings, and pass their echoes back down to you:
   - A post on that channel heard zero-hop is sent on, as on any configured channel.
@@ -109,6 +108,9 @@ Notes:
   prefix the classifier sees is only a routing hint). Flood and multi-hop
   admin traffic is dropped, so the node cannot be administered through the
   wider mesh. USB serial remains available as the primary console.
+  Commands are accepted as CLI data or as MeshCore 1.18's explicit CLI type.
+- New installs start with **loop detection minimal**, as upstream repeaters do from 1.18 (`set loop.detect`
+  changes it; a saved setting is kept).
 - With no valid policy file on the filesystem, the node boots **receive-only**
   (fail closed) until you configure owners via the CLI.
 
@@ -172,9 +174,8 @@ car extends it, and have MeshMapper credit the real repeaters, not the car.
   with the path kept (`[car, R1, …]`). MeshMapper strips the car and credits `R1`, the repeater that heard
   the car. These include repeaters only the car's antenna reaches. A stripped echo carries no SNR/RSSI:
   MeshMapper records the repeater, not the signal.
-- **Discovery (DISC):** answered by repeaters your pocket node reaches directly. The relay answers too,
-  and MeshMapper ignores it as your CARpeater. Discovery is zero-hop by design, so the car cannot extend
-  it.
+- **Discovery (DISC):** answered by repeaters your pocket node reaches directly. The relay does not
+  answer discovery (it never advertises). Discovery is zero-hop by design, so the car cannot extend it.
 - **Traces:** MeshMapper's targeted trace names one repeater, so it reaches only repeaters your pocket
   node hears directly. (A trace that names the car first, from another tool, is relayed.)
 - `edge status` shows `wde:` (echoes handed down) climbing while you wardrive.
