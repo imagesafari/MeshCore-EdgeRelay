@@ -50,7 +50,7 @@
 #define REQ_TYPE_GET_ACCESS_LIST    0x05
 #define REQ_TYPE_GET_NEIGHBOURS     0x06
 #define REQ_TYPE_GET_OWNER_INFO     0x07     // FIRMWARE_VER_LEVEL >= 2
-#define EDGE_REQ_GET_EDGE_STATS     0xC0     // ours, as on the edge companion: the edge counts (EdgeStats.h)
+#define EDGE_REQ_GET_EDGE_STATS     0xC0     // not an upstream allocation: the edge counts (EdgeStats.h)
 
 #define RESP_SERVER_LOGIN_OK        0 // response to ANON_REQ
 
@@ -375,9 +375,8 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
     sprintf((char *) &reply_data[4], "%s\n%s\n%s", FIRMWARE_VERSION, _prefs.node_name, _prefs.owner_info);
     return 4 + strlen((char *) &reply_data[4]);
   } else if (payload[0] == EDGE_REQ_GET_EDGE_STATS) {
-    // The edge counts, one set per request (payload[1]: 0 since boot, 1 lifetime), in the edge companion's frame
-    // (EdgeStats.h has the layout), so one console reads both. The relay is always in edge mode (bit 0) and has
-    // no late relay (bit 2).
+    // The edge counts, one set per request (payload[1]: 0 since boot, 1 lifetime), so it fits a flood's path
+    // return; EdgeStats.h has the layout. The relay is always in edge mode (bit 0) and has no late relay (bit 2).
     uint8_t flags = 1 | (edge_policy.isValid() ? 2 : 0) | (edge_policy.getFwdAcks() ? 8 : 0) |
                     (edge_policy.getMirrorAdverts() ? 16 : 0) | (edge_stats.save_failed ? 32 : 0);
     int n = edgeStatsFrame(&reply_data[4], sizeof(reply_data) - 4 - 4, edge_stats, payload_len > 1 ? payload[1] : 0,
@@ -1146,7 +1145,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.flood_max_advert = 8;
   _prefs.interference_threshold = 0; // disabled
   _prefs.cad_enabled = 0;            // hardware CAD before TX (off by default; 'set cad on')
-  _prefs.loop_detect = LOOP_DETECT_MINIMAL;  // as upstream repeaters from 1.18 (jon, 15 Oct): new installs only
+  _prefs.loop_detect = LOOP_DETECT_MINIMAL;  // as upstream repeaters from 1.18: new installs only
 
   // bridge defaults
   _prefs.bridge_enabled = 1;    // enabled

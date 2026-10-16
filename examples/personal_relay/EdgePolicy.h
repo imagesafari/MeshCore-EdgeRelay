@@ -31,7 +31,7 @@
 #define EDGE_WARDRIVE_ECHO_RATE_MAX  24
 #define EDGE_WARDRIVE_ECHO_WINDOW_MS 60000UL
 
-// Direct receipts forwarded (D1): an ACK names no sender, so they are capped like traces, and bounded in size.
+// Direct receipts forwarded: an ACK names no sender, so they are capped like traces, and bounded in size.
 #define EDGE_ACK_MAX_LEN       8
 #define EDGE_ACK_FWD_MAX       30
 #define EDGE_ACK_FWD_WINDOW_MS 60000UL

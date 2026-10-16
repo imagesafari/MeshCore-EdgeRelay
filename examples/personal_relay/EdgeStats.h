@@ -1,12 +1,12 @@
 #pragma once
 
-// What the edge did, counted (jon, 15 Oct: "better stats", kept across reboots). Two sets of the same counters:
-// since boot (RAM), and lifetime (saved to EDGE_STATS_FILE every EDGE_STATS_SAVE_MS, on `edge stats save`, and
-// before a reboot the app asks for; a crash loses at most the time since the last save). Plus, per owner, how
-// many of its packets went out and when it was last heard directly (RAM only).
+// What the edge did, counted, kept across reboots. Two sets of the same counters: since boot (RAM), and lifetime
+// (saved to EDGE_STATS_FILE every EDGE_STATS_SAVE_MS, on `edge stats save`, and before a reboot or power-off that
+// is asked for; a crash loses at most the time since the last save). Plus, per owner, how many of its packets
+// went out and when it was last heard directly (RAM only).
 //
-// Pure: no I/O. MyMeshEdge.cpp counts and saves; `edge stats …` (EdgeCommand.cpp) and the 0xC0 request
-// (EDGE_REQ_GET_EDGE_STATS) read them. The same file is in EdgeRelay (examples/personal_relay/EdgeStats.h).
+// Pure: no I/O. MyMesh.cpp counts, and answers `edge stats …` and the 0xC0 request (EDGE_REQ_GET_EDGE_STATS);
+// EdgePolicy.cpp reads and writes the file (edgeLoadStats, edgeSaveStats).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -18,12 +18,12 @@ enum EdgeStat : uint8_t {
   ES_UPLINK = 0,      // an owner's flood sent on (its posts, adverts, requests)
   ES_COPY,            // a packet for an owner re-sent as a zero-hop copy
   ES_DIRECT,          // a direct packet to or from an owner sent on
-  ES_ACK,             // a delivery receipt naming this node sent on (D1)
+  ES_ACK,             // a delivery receipt sent on (a direct one naming this node, or a flood one with fwd_acks)
   ES_TRACE,           // a trace naming this node sent on
   ES_TRACE_THROUGH,   // an owner's trace that does not name this node, sent on (transparent trace)
   ES_WD_POST,         // a wardriving post sent on
   ES_WD_ECHO,         // an echo of one handed back down
-  ES_LOGIN,           // an owner's login to a repeater or room sent on (D2)
+  ES_LOGIN,           // an owner's login to a repeater or room sent on
   // late relay
   ES_HELD,            // an owner's flood held for late relay
   ES_SENT_LATE,       // ...and sent when the hold ran out

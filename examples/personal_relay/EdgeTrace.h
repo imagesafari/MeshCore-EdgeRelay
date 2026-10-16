@@ -1,7 +1,5 @@
 #pragma once
 
-// The same file is in the edge companion (examples/companion_radio/edge/EdgeTrace.h), but for this line.
-
 #include <stdint.h>
 #include <string.h>
 #include <Packet.h>
@@ -45,7 +43,7 @@ inline uint32_t edgeTraceTag(const mesh::Packet* pkt) {
   return tag;
 }
 
-// Transparent trace (jon, 15 Oct): the tags of owners' traces this node sent on, so the completed trace with the
+// Transparent trace: the tags of owners' traces this node sent on, so the completed trace with the
 // same tag is handed back down to the owner, who may not hear the repeater it went to. A few seconds each.
 #define EDGE_TRACE_RING      8
 #define EDGE_TRACE_BACK_MS   8000UL

@@ -1,6 +1,6 @@
 // The edge counts (EdgeStats.h): kept across reboots by their file, read as pages within a mesh reply, and sent
-// to a console as the 0xC0 answer. Included by test_edge_policy.cpp (one test binary per folder). Ported from the
-// edge companion's test/test_edge_policy/test_edge_stats.inc; the relay's own status line and stats file at the end.
+// to a console as the 0xC0 answer. Included by test_edge_policy.cpp (one test binary per folder). The relay's
+// status line and stats file are at the end.
 
 static void fill(EdgeStats& s, uint32_t v) {
   s.clear();

@@ -38,8 +38,8 @@ Based on MeshCore **1.18.0** (`repeater-v1.18.0`). All changes are confined to `
 | Area | Change |
 |---|---|
 | `EdgePolicy.h` / `EdgePolicy.cpp` (new) | Packet classifier, persisted configuration, per-class rate limiting, the stats file. |
-| `EdgeStats.h` (new) | What the relay did, counted since boot and lifetime (`edge stats`, request `0xC0`). The same file as the edge companion's. |
-| `EdgeTrace.h` (new) | Trace hop checks and the transparent trace ring. The same file as the edge companion's, but for its first comment. |
+| `EdgeStats.h` (new) | What the relay did, counted since boot and lifetime (`edge stats`, request `0xC0`). |
+| `EdgeTrace.h` (new) | Trace hop checks and the transparent trace ring. |
 | `MyMesh::onRecvPacket()` | Every received packet is classified **before** stock handling: `EDGE_STOCK` (proceed), `EDGE_LOCAL_COPY` (re-emit once as zero-hop direct, drop original), or `EDGE_DROP`. |
 | `MyMesh::allowPacketForward()` | Final deny guard — stock forwarding is permitted only for packets the policy approved. |
 | `sendSelfAdvertisement()` | No-op. The car **never** advertises, so the mesh never learns routes through a moving node. |
@@ -180,7 +180,7 @@ half-written file starts them from zero.
 | `stats` / `stats boot` / `stats life` | sent on: `up` owner floods, `copy` zero-hop copies, `dfwd` direct, `ack` receipts, `tr` traces naming the car, `trt` owners' traces through it (transparent), `wdp` wardriving posts, `wde` echoes handed down, `login` owners' logins |
 | `stats drops` / `stats drops life` | not sent on, by reason: `pol` not an owner's or a chosen channel; `nobuf` packet pool empty; `rl` over a rate limit (`copy`, `ack`, `tr`, `echo`); `notours` a wardriving echo of a post the car did not send on |
 | `stats owners` | each owner by key prefix: packets sent on (DMs, requests and logins; a channel post names no sender), and when it was last heard directly, at what SNR (since boot) |
-| `stats late` | late relay, which only the edge companion has: always 0 here |
+| `stats late` | late relay, which this firmware does not have: always 0 (kept so the counter list, and the `0xC0` frame, has a fixed layout) |
 
 Each page fits one reply over the mesh, even with every count at its largest. If the last save of the
 lifetime counts failed, `stats life` reads `life save FAILED`.
@@ -188,7 +188,7 @@ lifetime counts failed, `stats life` reads `life save FAILED`.
 **For a console:** a logged-in client can ask for request type `0xC0` (`EDGE_REQ_GET_EDGE_STATS`, one
 data byte: 0 since boot, 1 lifetime). The answer, after the 4-byte tag, is
 `[version 1][set][flags][owners][channels][wardrive][count N][N × uint32 LE]`, in the order of `EdgeStat`
-(`EdgeStats.h`), the same frame as the edge companion's. flags: bit 0 edge on (always, on the relay),
+(`EdgeStats.h`). flags: bit 0 edge on (always, on the relay),
 1 valid policy, 2 late relay (never, on the relay), 3 receipts forwarded, 4 adverts mirrored, 5 the last
 lifetime save failed. `0xC0` is ours, not an upstream allocation. A stock node does not answer it, which
 is how a console tells an edge node from any other. As with any admin traffic to the car, the request
