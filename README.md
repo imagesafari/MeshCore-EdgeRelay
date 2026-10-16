@@ -163,9 +163,21 @@ edge stats reset             - zero both sets (owners stay listed), save
 Configuration persists to `/edge_policy` on the device filesystem.
 
 `edge status` replies `OK - valid:1 owners:1 ch:1 up:… copy:… dfwd:… trace:… drop:… wd:0 wde:…`. The
-counts are since boot: `up` owner floods, wardriving posts and logins sent on, `copy` local copies,
-`dfwd` direct packets and receipts, `trace` both kinds of trace, `drop` every reason, `wde` wardriving
-echoes handed down. `edge stats` has them apart.
+counts are since boot, and each total is the sum of these `edge stats` counters:
+
+- `up`: owner floods, wardriving posts, and owners' logins (flood, or routed through the car) sent on
+  (`up` + `wdp` + `login`).
+- `copy`: local copies (`copy`).
+- `dfwd`: owners' other direct packets routed through the car, and receipts: direct ones naming the car, and
+  flood ones with `fwd_acks 1` (`dfwd` + `ack`).
+- `trace`: traces naming the car, and transparent traces (`tr` + `trt`).
+- `drop`: everything not sent on, for every reason: policy, packet pool empty, each rate limit, and
+  wardriving echoes of posts the car did not send on (the whole `stats drops` page).
+- `wde`: wardriving echoes handed down (`wde`).
+
+Earlier firmware counted these differently: a login routed through the car in `dfwd`, a flood receipt
+heard directly in `up`, an owner flood as it was heard rather than when it was sent on, and wardriving
+echo losses not at all.
 
 #### Edge stats
 

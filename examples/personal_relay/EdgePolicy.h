@@ -177,7 +177,9 @@ EdgeStat edgeSentStat(const mesh::Packet* pkt, bool wardrive_post);
 // True if it changed it (the caller saves the policy); a bad value is an Err reply and changes nothing.
 bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap);
 
-// `edge status`: the settings, then the totals since boot. The totals mean what they always did: up is owner
-// floods, wardriving posts and logins sent on; dfwd direct packets and receipts; trace both kinds; drop every
-// reason (`edge stats` has them apart). One reply over the mesh (EDGE_REPLY_MAX) at every count's largest.
+// `edge status`: the settings, then the totals since boot, summed from EdgeStats: up is owner floods, wardriving
+// posts and owners' logins (flood or routed through the car) sent on; dfwd owners' other direct packets and
+// receipts; trace both kinds; drop every reason, rate limits and no-buffer losses included (`edge stats` has them
+// apart). Before EdgeStats a routed login counted in dfwd, and drop left out wardriving echo losses. One reply
+// over the mesh (EDGE_REPLY_MAX) at every count's largest.
 void edgeStatusReply(const EdgePolicy& policy, const EdgeStats& stats, char* reply, size_t cap);

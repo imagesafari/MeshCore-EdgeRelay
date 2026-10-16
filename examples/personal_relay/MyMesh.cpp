@@ -1432,7 +1432,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
 
   if (*args == 0 || strcmp(args, "help") == 0) {
     Serial.println("edge status                  - show policy + counters");
-    Serial.println("edge stats [boot|life|drops [life]|owners] - counts by kind, since boot or lifetime");
+    Serial.println("edge stats [boot|life|drops [life]|owners|late] - counts by kind, since boot or lifetime");
     Serial.println("edge stats save|reset        - save the lifetime counts now / zero both sets");
     Serial.println("edge owner list              - list owner pubkeys");
     Serial.println("edge owner show <idx>        - show one owner pubkey in reply");
