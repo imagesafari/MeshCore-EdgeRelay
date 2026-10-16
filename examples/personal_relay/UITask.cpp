@@ -2,9 +2,6 @@
 #include "target.h"
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
-#include "MyMesh.h"
-
-extern MyMesh the_mesh;
 
 #ifndef USER_BTN_PRESSED
 #define USER_BTN_PRESSED LOW
@@ -147,7 +144,7 @@ void UITask::loop() {
     digitalWrite(LED_PIN, LED_STATE_ON); // switch on the led until poweroff
 #endif
     if (millis() > _powering_off_at) {
-      the_mesh.edgeSaveStats();  // the lifetime edge counts since the last save
+      if (_on_power_off) _on_power_off();
       _board->powerOff();  // should not return
     }
   }

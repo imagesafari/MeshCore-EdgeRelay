@@ -108,6 +108,7 @@ void setup() {
 
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
+  ui_task.onPowerOff([] { the_mesh.edgeSaveStats(); });  // the lifetime edge counts since the last save
 #endif
 
 #ifdef ETHERNET_ENABLED
