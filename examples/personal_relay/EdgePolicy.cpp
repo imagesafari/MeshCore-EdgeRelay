@@ -3,13 +3,22 @@
 EdgePolicy::EdgePolicy() {
   _num_owners = 0;
   _num_channels = 0;
+  _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
   _valid = false;   // no policy loaded yet -> fail closed until load() succeeds
   _rl_start_ms = 0;
   _rl_count = 0;
+  _tr_start_ms = 0;
+  _tr_count = 0;
+  _ack_start_ms = 0;
+  _ack_count = 0;
+  _wd_start_ms = 0;
+  _wd_count = 0;
   memset(_owner_keys, 0, sizeof(_owner_keys));
   memset(_channel_hashes, 0, sizeof(_channel_hashes));
+  memset(_wardrive_hashes, 0, sizeof(_wardrive_hashes));
 }
 
 bool EdgePolicy::isOwnerHash(uint8_t h) const {
@@ -18,6 +27,13 @@ bool EdgePolicy::isOwnerHash(uint8_t h) const {
     if (_owner_keys[i][0] == h) return true;
   }
   return false;
+}
+
+const uint8_t* EdgePolicy::ownerKeyByHash(uint8_t h) const {
+  for (int i = 0; i < _num_owners; i++) {
+    if (_owner_keys[i][0] == h) return _owner_keys[i];
+  }
+  return nullptr;
 }
 
 bool EdgePolicy::isOwnerPubkey(const uint8_t pubkey[PUB_KEY_SIZE]) const {
@@ -75,6 +91,31 @@ bool EdgePolicy::removeChannel(uint8_t hash1) {
   return false;
 }
 
+bool EdgePolicy::isWardrive(uint8_t h) const {
+  for (int i = 0; i < _num_wardrive; i++) {
+    if (_wardrive_hashes[i] == h) return true;
+  }
+  return false;
+}
+
+int EdgePolicy::addWardrive(uint8_t hash1) {
+  if (isWardrive(hash1)) return -1;
+  if (_num_wardrive >= EDGE_MAX_WARDRIVE) return -1;
+  _wardrive_hashes[_num_wardrive] = hash1;
+  return _num_wardrive++;
+}
+
+bool EdgePolicy::removeWardrive(uint8_t hash1) {
+  for (int i = 0; i < _num_wardrive; i++) {
+    if (_wardrive_hashes[i] == hash1) {
+      for (int j = i; j < _num_wardrive - 1; j++) _wardrive_hashes[j] = _wardrive_hashes[j + 1];
+      _num_wardrive--;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool EdgePolicy::tryLocalCopy(uint32_t now_ms) {
   if (now_ms - _rl_start_ms >= EDGE_LOCAL_COPY_WINDOW_MS) {
     _rl_start_ms = now_ms;
@@ -83,6 +124,49 @@ bool EdgePolicy::tryLocalCopy(uint32_t now_ms) {
   if (_rl_count >= EDGE_LOCAL_COPY_MAX) return false;
   _rl_count++;
   return true;
+}
+
+bool EdgePolicy::tryWardriveEcho(uint32_t now_ms) {
+  if (now_ms - _wd_start_ms >= EDGE_WARDRIVE_ECHO_WINDOW_MS) {
+    _wd_start_ms = now_ms;
+    _wd_count = 0;
+  }
+  if (_wd_count >= EDGE_WARDRIVE_ECHO_RATE_MAX) return false;
+  _wd_count++;
+  return true;
+}
+
+bool EdgePolicy::tryAckForward(uint32_t now_ms) {
+  if (now_ms - _ack_start_ms >= EDGE_ACK_FWD_WINDOW_MS) {
+    _ack_start_ms = now_ms;
+    _ack_count = 0;
+  }
+  if (_ack_count >= EDGE_ACK_FWD_MAX) return false;
+  _ack_count++;
+  return true;
+}
+
+bool EdgePolicy::tryTrace(uint32_t now_ms) {
+  if (now_ms - _tr_start_ms >= EDGE_TRACE_WINDOW_MS) {
+    _tr_start_ms = now_ms;
+    _tr_count = 0;
+  }
+  if (_tr_count >= EDGE_TRACE_MAX) return false;
+  _tr_count++;
+  return true;
+}
+
+bool EdgePolicy::setTraceSnr(int db) {
+  if (db != EDGE_TRACE_SNR_OFF && (db < EDGE_TRACE_SNR_MIN || db > EDGE_TRACE_SNR_MAX)) return false;
+  _trace_snr = (int8_t)db;
+  return true;
+}
+
+bool EdgePolicy::setTraceSnrText(const char* text) {
+  if (strcmp(text, "off") == 0) return setTraceSnr(EDGE_TRACE_SNR_OFF);
+  char* end;
+  long db = strtol(text, &end, 10);
+  return end != text && *end == 0 && db >= EDGE_TRACE_SNR_MIN && db <= EDGE_TRACE_SNR_MAX && setTraceSnr((int)db);
 }
 
 static bool isFloodRoute(uint8_t route) {
@@ -123,6 +207,9 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
       case PAYLOAD_TYPE_GRP_DATA: {
         if (pkt->payload_len < 1) return EDGE_DROP;
         uint8_t ch = pkt->payload[0];
+        // A wardriving channel: posts heard zero-hop go out as on an opted-in channel; echoes (path >= 1) are
+        // handed down with their path only if they are of a post we sent on (EdgeWardrive.h), else dropped.
+        if (isWardrive(ch)) return path_count == 0 ? EDGE_STOCK : EDGE_WARDRIVE_ECHO;
         if (!isChannel(ch)) return EDGE_DROP;
         // Configured channel: owner opted in. Outbound (zero-hop) group traffic
         // goes through the normal flood path; inbound floods get a local copy.
@@ -138,6 +225,13 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
         if (_mirror_adverts && path_count > 0) return EDGE_LOCAL_COPY;
         return EDGE_DROP;
       }
+      case PAYLOAD_TYPE_ANON_REQ: {
+        // A login (to a repeater or room): [dest hash][sender's 32-byte public key][...]. Unlike other packets it
+        // names its sender in full, so an owner's own, heard zero-hop, goes out like their other requests.
+        // A login to this node itself is not one to pass on: its own zero-hop login rule decides that.
+        if (path_count != 0 || pkt->payload_len < 1 + PUB_KEY_SIZE || pkt->payload[0] == self_hash[0]) return EDGE_DROP;
+        return isOwnerPubkey(&pkt->payload[1]) ? EDGE_STOCK : EDGE_DROP;
+      }
       case PAYLOAD_TYPE_ACK: {
         // ACKs carry no attributable owner identity; default is to drop.
         return _fwd_acks ? EDGE_STOCK : EDGE_DROP;
@@ -150,6 +244,19 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
   }
 
   if (isDirectRoute(route)) {
+    if (ptype == PAYLOAD_TYPE_TRACE) {
+      // A trace's path field holds SNRs, not hashes, so the next-hop rules below do not apply to it: its
+      // hops are listed in the payload (EdgeTrace.h). Relayed as stock when this node is the next one named.
+      if (edgeTraceNextHopIsSelf(pkt, self_hash, self_hash_len)) return EDGE_STOCK;
+      // Transparent trace: a fresh one (no hop done yet) heard loud is an owner's in the car: sent on as heard,
+      // and its result handed back down (MyMesh::edgeTraceOn checks the tag). A trace names no sender, so the SNR
+      // is the owner check; a loud stranger's trace (a car alongside) can go too, within the trace rate limit.
+      if (_trace_snr != EDGE_TRACE_SNR_OFF) {
+        if (pkt->path_len == 0 && !edgeTraceComplete(pkt) && pkt->getSNR() >= _trace_snr) return EDGE_TRACE_THROUGH;
+        if (edgeTraceComplete(pkt)) return EDGE_TRACE_BACK;
+      }
+      return EDGE_DROP;
+    }
     if (path_count == 0) {
       // Zero-hop direct: link-local only. Allow control (e.g. discovery),
       // anonymous requests (info queries + password login), and post-login
@@ -183,11 +290,25 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
         return isChannel(pkt->payload[0]) ? EDGE_STOCK : EDGE_DROP;
       }
       case PAYLOAD_TYPE_ACK: {
-        return _fwd_acks ? EDGE_STOCK : EDGE_DROP;
+        // A delivery receipt routed through us: nodes learn a route through this node only from traffic it carried,
+        // which is owners' traffic, so a direct receipt naming it is an owner's (flood receipts name nobody: those
+        // stay behind fwd_acks).
+        // A receipt is 4-6 bytes (BaseChatMesh::sendAckTo): anything longer is not one, and would make this
+        // node carry a stranger's payload. Forwards are also rate-limited (tryAckForward).
+        return pkt->payload_len >= 4 && pkt->payload_len <= EDGE_ACK_MAX_LEN ? EDGE_STOCK : EDGE_DROP;
+      }
+      case PAYLOAD_TYPE_MULTIPART: {
+        // the multi-ACK form of the same receipt (Mesh::createMultiAck): [remaining << 4 | ACK][ack...]
+        if (pkt->payload_len < 5 || pkt->payload_len > 1 + EDGE_ACK_MAX_LEN) return EDGE_DROP;
+        return (pkt->payload[0] & 0x0F) == PAYLOAD_TYPE_ACK ? EDGE_STOCK : EDGE_DROP;
+      }
+      case PAYLOAD_TYPE_ANON_REQ: {
+        // an owner's login on its way to a repeater or room, by a route through us (it names its sender in full)
+        if (pkt->payload_len < 1 + PUB_KEY_SIZE) return EDGE_DROP;
+        return isOwnerPubkey(&pkt->payload[1]) ? EDGE_STOCK : EDGE_DROP;
       }
       default:
-        // ANON_REQ is only allowed zero-hop (handled above); multi-hop and
-        // everything else (TRACE, CONTROL, MULTIPART, RAW_CUSTOM): drop.
+        // everything else (CONTROL, other MULTIPART, RAW_CUSTOM): drop. (TRACE is handled above.)
         return EDGE_DROP;
     }
   }
@@ -199,40 +320,59 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   ER1
 //   owner <64 hex chars of pubkey>
 //   chan <2 hex chars of channel hash>
+//   wardrive <2 hex chars of channel hash>
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
+//   trace_snr <-20..30>|off  (transparent trace; absent means EDGE_TRACE_SNR_DEFAULT, and only then not written)
 // Any parse error invalidates the whole policy (fail closed).
 
-static File openPolicyRead(FILESYSTEM* fs) {
+// The policy file and the stats file (EdgeStats.h) open the same way on every platform.
+static File openEdgeRead(FILESYSTEM* fs, const char* path) {
 #if defined(RP2040_PLATFORM)
-  return fs->open(EDGE_POLICY_FILE, "r");
+  return fs->open(path, "r");
 #else
-  return fs->open(EDGE_POLICY_FILE);   // ESP32 default is read; NRF52 Adafruit default is FILE_O_READ
+  return fs->open(path);   // ESP32 default is read; NRF52 Adafruit default is FILE_O_READ
 #endif
 }
 
-static File openPolicyWrite(FILESYSTEM* fs) {
+static File openEdgeWrite(FILESYSTEM* fs, const char* path) {
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   // FILE_O_WRITE does not truncate: it opens read/write and seeks to the end,
   // so without the remove every save appended another copy of the policy and
   // load() stopped at the second "ER1" (same pattern as IdentityStore::save).
-  fs->remove(EDGE_POLICY_FILE);
-  return fs->open(EDGE_POLICY_FILE, FILE_O_WRITE);
+  fs->remove(path);
+  return fs->open(path, FILE_O_WRITE);
 #elif defined(RP2040_PLATFORM)
-  return fs->open(EDGE_POLICY_FILE, "w");
+  return fs->open(path, "w");
 #else
-  return fs->open(EDGE_POLICY_FILE, "w", true);
+  return fs->open(path, "w", true);
 #endif
 }
 
 bool EdgePolicy::load(FILESYSTEM* fs) {
+  if (parsePolicy(fs)) return true;
+  // Any parse error invalidates the whole policy: drop whatever was parsed
+  // before the error too, so a later save() can't persist a half-read file.
   _valid = false;
   _num_owners = 0;
   _num_channels = 0;
+  _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
+  return false;
+}
 
-  File f = openPolicyRead(fs);
+bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
+  _valid = false;
+  _num_owners = 0;
+  _num_channels = 0;
+  _num_wardrive = 0;
+  _mirror_adverts = false;
+  _fwd_acks = false;
+  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
+
+  File f = openEdgeRead(fs, EDGE_POLICY_FILE);
   if (!f) return false;
 
   char line[80];
@@ -261,10 +401,18 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
             f.close(); return false;
           }
           if (addChannel(h) < 0) { f.close(); return false; }
+        } else if (memcmp(line, "wardrive ", 9) == 0) {
+          uint8_t h;
+          if (strlen(line + 9) != 2 || !mesh::Utils::fromHex(&h, 1, line + 9)) {
+            f.close(); return false;
+          }
+          if (addWardrive(h) < 0) { f.close(); return false; }
         } else if (memcmp(line, "mirror_adverts ", 15) == 0) {
           _mirror_adverts = (line[15] == '1');
         } else if (memcmp(line, "fwd_acks ", 9) == 0) {
           _fwd_acks = (line[9] == '1');
+        } else if (memcmp(line, "trace_snr ", 10) == 0) {
+          if (!setTraceSnrText(line + 10)) { f.close(); return false; }
         } else {
           f.close(); return false;  // unknown directive -> fail closed
         }
@@ -284,7 +432,7 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
 }
 
 bool EdgePolicy::save(FILESYSTEM* fs) {
-  File f = openPolicyWrite(fs);
+  File f = openEdgeWrite(fs, EDGE_POLICY_FILE);
   if (!f) return false;
   f.println("ER1");
   char hex[PUB_KEY_SIZE * 2 + 1];
@@ -300,11 +448,109 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
     f.print("chan ");
     f.println(hex);
   }
+  for (int i = 0; i < _num_wardrive; i++) {
+    sprintf(hex, "%02x", _wardrive_hashes[i]);
+    f.print("wardrive ");
+    f.println(hex);
+  }
   f.print("mirror_adverts ");
   f.println(_mirror_adverts ? "1" : "0");
   f.print("fwd_acks ");
   f.println(_fwd_acks ? "1" : "0");
+  // Written only when not the default, so a policy that never set it stays readable by firmware without it.
+  if (_trace_snr == EDGE_TRACE_SNR_OFF) {
+    f.println("trace_snr off");
+  } else if (_trace_snr != EDGE_TRACE_SNR_DEFAULT) {
+    char db[16];
+    snprintf(db, sizeof(db), "trace_snr %d", (int)_trace_snr);
+    f.println(db);
+  }
   f.close();
   _valid = true;
   return true;
+}
+
+// One stats file into `stats`. `found`: whether the file was there at all.
+static bool readStatsFile(FILESYSTEM* fs, const char* path, EdgeStats& stats, bool& found) {
+  File f = openEdgeRead(fs, path);
+  found = (bool)f;
+  if (!f) return false;
+  char text[EDGE_STATS_TEXT_MAX];
+  size_t n = 0;
+  int c;
+  while ((c = f.read()) >= 0) {
+    if (n + 1 >= sizeof(text)) {  // longer than any this firmware writes: not ours
+      f.close();
+      return false;
+    }
+    text[n++] = (char)c;
+  }
+  f.close();
+  text[n] = 0;
+  return stats.parse(text);
+}
+
+bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats) {
+  bool found;
+  bool ok = readStatsFile(fs, EDGE_STATS_FILE, stats, found);
+  if (found) return ok;
+  // No main file: a save on SPIFFS removes it before renaming the new one over, so power lost between the two
+  // leaves only the new one. It is used if it is whole (parse() refuses a half-written one).
+  return readStatsFile(fs, EDGE_STATS_FILE_NEW, stats, found);
+}
+
+bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms) {
+  char text[EDGE_STATS_TEXT_MAX];
+  int n = stats.serialize(text, sizeof(text));
+  bool ok = n > 0;
+  if (ok) {
+    File f = openEdgeWrite(fs, EDGE_STATS_FILE_NEW);
+    ok = f && f.write((const uint8_t*)text, (size_t)n) == (size_t)n;
+    if (f) f.close();
+  }
+  if (!ok) {
+    fs->remove(EDGE_STATS_FILE_NEW);  // not written whole: the saved counts stay as they were
+  } else if (!fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE)) {
+    // LittleFS renames over a file; SPIFFS (ESP32) will not, so make room. From here the new file may be the only
+    // copy of the counts: it is never removed, and edgeLoadStats() reads it when the main file is missing.
+    fs->remove(EDGE_STATS_FILE);
+    ok = fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE);
+  }
+  stats.saved_ms = now_ms;    // a failed save is tried again at the next interval, not at once
+  stats.save_failed = !ok;    // said on `edge stats life` and in the 0xC0 flags, not kept quiet
+  if (ok) stats.dirty = false;
+  return ok;
+}
+
+EdgeStat edgeSentStat(const mesh::Packet* pkt, bool wardrive_post) {
+  uint8_t pt = pkt->getPayloadType();
+  if (pt == PAYLOAD_TYPE_ANON_REQ) return ES_LOGIN;
+  if (!pkt->isRouteFlood()) return ES_DIRECT;
+  if (wardrive_post) return ES_WD_POST;
+  return pt == PAYLOAD_TYPE_ACK ? ES_ACK : ES_UPLINK;
+}
+
+bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap) {
+  bool changed = false;
+  if (arg[0]) {
+    int8_t was = policy.getTraceSnr();
+    if (!policy.setTraceSnrText(arg)) {
+      snprintf(reply, cap, "Err - trace_snr <dB>: %d to %d, or off", EDGE_TRACE_SNR_MIN, EDGE_TRACE_SNR_MAX);
+      return false;
+    }
+    changed = policy.getTraceSnr() != was;
+  }
+  int8_t db = policy.getTraceSnr();
+  if (db == EDGE_TRACE_SNR_OFF) snprintf(reply, cap, "OK - transparent trace off");
+  else snprintf(reply, cap, "OK - transparent trace: traces heard at %d dB or better", (int)db);
+  return changed;
+}
+
+void edgeStatusReply(const EdgePolicy& policy, const EdgeStats& stats, char* reply, size_t cap) {
+  const uint32_t* c = stats.boot;
+  snprintf(reply, cap, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu trace:%lu drop:%lu wd:%d wde:%lu",
+           policy.isValid() ? 1 : 0, policy.getNumOwners(), policy.getNumChannels(),
+           (unsigned long)(c[ES_UPLINK] + c[ES_WD_POST] + c[ES_LOGIN]), (unsigned long)c[ES_COPY],
+           (unsigned long)(c[ES_DIRECT] + c[ES_ACK]), (unsigned long)(c[ES_TRACE] + c[ES_TRACE_THROUGH]),
+           (unsigned long)stats.drops(false), policy.getNumWardrive(), (unsigned long)c[ES_WD_ECHO]);
 }

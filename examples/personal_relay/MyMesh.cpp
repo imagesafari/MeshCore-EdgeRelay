@@ -1,4 +1,5 @@
 #include "MyMesh.h"
+#include "EdgeChannel.h"
 #include <algorithm>
 
 /* ------------------------------ Config -------------------------------- */
@@ -49,6 +50,7 @@
 #define REQ_TYPE_GET_ACCESS_LIST    0x05
 #define REQ_TYPE_GET_NEIGHBOURS     0x06
 #define REQ_TYPE_GET_OWNER_INFO     0x07     // FIRMWARE_VER_LEVEL >= 2
+#define EDGE_REQ_GET_EDGE_STATS     0xC0     // not an upstream allocation: the edge counts (EdgeStats.h)
 
 #define RESP_SERVER_LOGIN_OK        0 // response to ANON_REQ
 
@@ -372,6 +374,15 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
   } else if (payload[0] == REQ_TYPE_GET_OWNER_INFO) {
     sprintf((char *) &reply_data[4], "%s\n%s\n%s", FIRMWARE_VERSION, _prefs.node_name, _prefs.owner_info);
     return 4 + strlen((char *) &reply_data[4]);
+  } else if (payload[0] == EDGE_REQ_GET_EDGE_STATS) {
+    // The edge counts, one set per request (payload[1]: 0 since boot, 1 lifetime), so it fits a flood's path
+    // return; EdgeStats.h has the layout. The relay is always in edge mode (bit 0) and has no late relay (bit 2).
+    uint8_t flags = 1 | (edge_policy.isValid() ? 2 : 0) | (edge_policy.getFwdAcks() ? 8 : 0) |
+                    (edge_policy.getMirrorAdverts() ? 16 : 0) | (edge_stats.save_failed ? 32 : 0);
+    int n = edgeStatsFrame(&reply_data[4], sizeof(reply_data) - 4 - 4, edge_stats, payload_len > 1 ? payload[1] : 0,
+                           flags, edge_policy.getNumOwners(), edge_policy.getNumChannels(),
+                           edge_policy.getNumWardrive());
+    return n > 0 ? 4 + n : 0;
   }
   return 0; // unknown command
 }
@@ -457,11 +468,26 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   }
   // Edge-relay final deny guard: never forward anything the directional policy
   // did not approve, even if it somehow reached stock handling.
-  uint8_t self_hash[8];
-  uint8_t hash_len = packet->getPathHashSize();
-  if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
-  self_id.copyHashTo(self_hash, hash_len);
-  return edge_policy.checkForward(packet, self_hash, hash_len);
+  uint8_t self_hash[EDGE_SELF_HASH_MAX];
+  self_id.copyHashTo(self_hash, sizeof(self_hash));
+  if (!edge_policy.checkForward(packet, self_hash, sizeof(self_hash))) return false;
+  // A wardriving post going out (every gate above passed: region, hop limit, loop): its echoes may come back
+  // down (handWardriveEchoDown). Remembered here, not on receipt, so a post we do not send on never is.
+  uint8_t pt = packet->getPayloadType();
+  bool wardrive_post = packet->isRouteFlood() && packet->getPathHashCount() == 0 &&
+      (pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && edge_policy.isWardrive(packet->payload[0]);
+  if (wardrive_post) {
+    uint8_t key[MAX_HASH_SIZE];
+    packet->calculatePacketHash(key);
+    wardrive_ring.remember(key, millis());
+  }
+  if (packet->isRouteFlood()) {
+    // A flood sent on: stock asks once per packet (Mesh::routeRecvPacket, after its seen-check). Direct packets,
+    // direct receipts and traces are counted in onRecvPacket().
+    edge_stats.add(edgeSentStat(packet, wardrive_post));
+    edgeCountOwner(packet);
+  }
+  return true;
 }
 
 const char *MyMesh::getLogDateTime() {
@@ -586,16 +612,30 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
     }
 
-    uint8_t self_hash[8];
-    uint8_t hash_len = pkt->getPathHashSize();
-    if (hash_len > sizeof(self_hash)) hash_len = sizeof(self_hash);
-    self_id.copyHashTo(self_hash, hash_len);
+    // The classifier compares as many bytes as the packet's hop hashes need (a trace states its own size),
+    // so it gets the whole EDGE_SELF_HASH_MAX-byte prefix of our key.
+    uint8_t self_hash[EDGE_SELF_HASH_MAX];
+    self_id.copyHashTo(self_hash, sizeof(self_hash));
 
-    EdgeAction edge_action = edge_policy.classify(pkt, self_hash, hash_len);
+    EdgeAction edge_action = edge_policy.classify(pkt, self_hash, sizeof(self_hash));
     if (edge_action == EDGE_DROP) {
       if (!getTables()->wasSeen(pkt)) {
         getTables()->markSeen(pkt);
-        edge_stats.n_dropped++;
+        edge_stats.add(ES_DROP_POLICY);
+      }
+      return ACTION_RELEASE;
+    }
+    if (edge_action == EDGE_TRACE_THROUGH || edge_action == EDGE_TRACE_BACK) {
+      edgeTraceOn(pkt, edge_action == EDGE_TRACE_THROUGH);
+      return ACTION_RELEASE;
+    }
+    if (edge_action == EDGE_WARDRIVE_ECHO) {
+      // Usually a repeat of a post we sent on, so already seen: that is the point (EdgeWardrive.h).
+      if (!getTables()->wasSeen(pkt)) {  // never a post we sent: nothing to hand down
+        getTables()->markSeen(pkt);
+        edge_stats.add(ES_ECHO_NOT_OURS);
+      } else {
+        handWardriveEchoDown(pkt, self_hash, sizeof(self_hash));
       }
       return ACTION_RELEASE;
     }
@@ -614,23 +654,51 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
             copy->payload_len = pkt->payload_len;
             memcpy(copy->payload, pkt->payload, pkt->payload_len);
             sendZeroHop(copy, getRetransmitDelay(copy));
-            edge_stats.n_local_copy++;
+            edge_stats.add(ES_COPY);
           } else {
             MESH_DEBUG_PRINTLN("edge: packet pool empty, local copy dropped");
-            edge_stats.n_dropped++;
+            edge_stats.add(ES_DROP_NOBUF);
           }
         } else {
           MESH_DEBUG_PRINTLN("edge: local-copy rate limit reached");
-          edge_stats.n_dropped++;
+          edge_stats.add(ES_RL_COPY);
         }
       }
       return ACTION_RELEASE;
     }
     // EDGE_STOCK: fall through to normal handling below.
-    if (pkt->isRouteFlood() && pkt->getPathHashCount() == 0) {
-      edge_stats.n_owner_uplink++;
+    if (pkt->isRouteDirect() && (pkt->getPayloadType() == PAYLOAD_TYPE_ACK || pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART)) {
+      // A direct receipt naming the car: like a trace it names no sender, so it is capped (counted once).
+      if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;
+      if (!_prefs.disable_fwd && !edge_policy.tryAckForward(millis())) {
+        MESH_DEBUG_PRINTLN("edge: receipt rate limit reached");
+        getTables()->markSeen(pkt);
+        edge_stats.add(ES_RL_ACK);
+        return ACTION_RELEASE;
+      }
+      if (!_prefs.disable_fwd) edge_stats.add(ES_ACK);
+    } else if (pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+      // A copy heard again goes no further, as stock would decide; dropped here so the seen-table counts
+      // the duplicate once (wasSeen() counts each hit, and stock would ask again).
+      if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;
+      if (!_prefs.disable_fwd) {  // with repeat off stock sends nothing: no slot spent, nothing counted
+        if (!edge_policy.tryTrace(millis())) {
+          MESH_DEBUG_PRINTLN("edge: trace rate limit reached");
+          getTables()->markSeen(pkt);
+          edge_stats.add(ES_RL_TRACE);
+          return ACTION_RELEASE;
+        }
+        edge_stats.add(ES_TRACE);
+      }
     } else if (pkt->isRouteDirect() && pkt->getPathHashCount() > 0) {
-      edge_stats.n_direct_fwd++;
+      // An owner's direct packet routed through the car. A repeat goes no further (stock's own seen-check would
+      // stop it): stopped here so it is counted once. Floods are counted in allowPacketForward(), where they
+      // have passed every check (region, hop limit, loop) and are about to go out.
+      if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;
+      if (!_prefs.disable_fwd) {
+        edge_stats.add(edgeSentStat(pkt, false));
+        edgeCountOwner(pkt);
+      }
     }
   }
 
@@ -646,6 +714,97 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     recv_pkt_region = NULL;
   }
   return Mesh::onRecvPacket(pkt);
+}
+
+void MyMesh::handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_hash, uint8_t self_len) {
+  uint8_t key[MAX_HASH_SIZE];
+  echo->calculatePacketHash(key);
+  if (!wardrive_ring.takeEcho(key, millis())) return;  // not ours, too late, or enough already
+  uint8_t path[MAX_PATH_SIZE], path_len;
+  if (!edgeWardriveEchoPath(echo, self_hash, self_len, path, path_len)) return;
+  if (!edge_policy.tryWardriveEcho(millis())) {  // its own budget: owner deliveries keep theirs
+    MESH_DEBUG_PRINTLN("edge: wardrive echo rate limit reached");
+    edge_stats.add(ES_RL_ECHO);
+    return;
+  }
+  mesh::Packet* copy = obtainNewPacket();
+  if (!copy) {
+    MESH_DEBUG_PRINTLN("edge: packet pool empty, wardrive echo dropped");
+    edge_stats.add(ES_DROP_NOBUF);
+    return;
+  }
+  copy->header = echo->header;
+  copy->transport_codes[0] = copy->transport_codes[1] = 0;
+  copy->payload_len = echo->payload_len;
+  memcpy(copy->payload, echo->payload, echo->payload_len);
+  sendDirect(copy, path, path_len, getRetransmitDelay(copy));  // [us, R1, ...]: only we are named next
+  edge_stats.add(ES_WD_ECHO);
+}
+
+// Transparent trace: an owner's trace that does not name the car goes out as heard (through), and its completed
+// result, when the repeater it went to sends it back, comes down as heard (back): MeshMapper's trace mode then works
+// through the car, which is on neither the path nor the result. Sent as heard, not by sendDirect(), which would move
+// a trace's SNR list into its payload.
+void MyMesh::edgeTraceOn(const mesh::Packet* pkt, bool through) {
+  // Once per packet: a trace's hash includes how far it has got, so the result is never the one sent out.
+  if (getTables()->wasSeen(pkt)) return;
+  getTables()->markSeen(pkt);
+  if (!through && !edge_trace_ring.take(edgeTraceTag(pkt), millis())) {  // someone else's trace, done
+    edge_stats.add(ES_DROP_POLICY);
+    return;
+  }
+  if (through) {
+    if (_prefs.disable_fwd) return;  // repeat off: the car sends nothing on, as for a trace naming it
+    // The rate limit is spent going out; the answer back is already bounded to one per trace sent (the ring entry
+    // is taken once), and spending a second token there could strand the answer to a trace already sent.
+    if (!edge_policy.tryTrace(millis())) {
+      MESH_DEBUG_PRINTLN("edge: trace rate limit reached");
+      edge_stats.add(ES_RL_TRACE);
+      return;
+    }
+  }
+  mesh::Packet* copy = obtainNewPacket();
+  if (!copy) {
+    MESH_DEBUG_PRINTLN("edge: packet pool empty, trace dropped");
+    edge_stats.add(ES_DROP_NOBUF);
+    return;
+  }
+  copy->header = pkt->header;
+  copy->transport_codes[0] = pkt->transport_codes[0];
+  copy->transport_codes[1] = pkt->transport_codes[1];
+  copy->payload_len = pkt->payload_len;
+  memcpy(copy->payload, pkt->payload, pkt->payload_len);
+  copy->path_len = pkt->path_len;  // the SNRs so far (a trace's path_len counts them: edgeTraceComplete bounds it)
+  memcpy(copy->path, pkt->path, pkt->path_len);
+  sendPacket(copy, 5, getDirectRetransmitDelay(copy));  // priority 5, as stock sends a trace on
+  if (through) {
+    edge_trace_ring.remember(edgeTraceTag(pkt), millis());
+    edge_stats.add(ES_TRACE_THROUGH);  // one per trace: its answer handed back is not counted again
+  }
+}
+
+// An owner's packet this node sent on (its sender named by its 1-byte hash, or, for a login, its whole key).
+void MyMesh::edgeCountOwner(const mesh::Packet* pkt) {
+  uint8_t pt = pkt->getPayloadType();
+  const uint8_t* key = nullptr;
+  if (pt == PAYLOAD_TYPE_ANON_REQ && pkt->payload_len >= 1 + PUB_KEY_SIZE) {
+    key = edge_policy.isOwnerPubkey(&pkt->payload[1]) ? &pkt->payload[1] : nullptr;
+  } else if ((pt == PAYLOAD_TYPE_TXT_MSG || pt == PAYLOAD_TYPE_REQ || pt == PAYLOAD_TYPE_RESPONSE ||
+              pt == PAYLOAD_TYPE_PATH) && pkt->payload_len >= 2) {
+    key = edge_policy.ownerKeyByHash(pkt->payload[1]);
+  }
+  if (!key) return;  // a channel post or an advert names no sender this can match
+  EdgeOwnerStat* o = edge_stats.owner(key);
+  o->packets++;
+  if (pkt->getPathHashCount() == 0) {  // heard directly
+    o->heard_ms = millis();
+    if (o->heard_ms == 0) o->heard_ms = 1;
+    o->snr4 = pkt->_snr;
+  }
+}
+
+bool MyMesh::edgeSaveStats() {
+  return ::edgeSaveStats(_fs, edge_stats, millis());
 }
 
 void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const mesh::Identity &sender,
@@ -784,7 +943,7 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
     memcpy(&sender_timestamp, data, 4); // timestamp (by sender's RTC clock - which could be wrong)
     uint8_t flags = (data[4] >> 2);        // message attempt number, and other flags
 
-    if (!(flags == TXT_TYPE_PLAIN || flags == TXT_TYPE_CLI_DATA)) {
+    if (!(flags == TXT_TYPE_PLAIN || flags == TXT_TYPE_CLI_DATA || flags == TXT_TYPE_CLI_COMMAND)) {
       MESH_DEBUG_PRINTLN("onPeerDataRecv: unsupported text type received: flags=%02x", (uint32_t)flags);
     } else if (sender_timestamp >= client->last_timestamp) { // prevent replay attacks
       bool is_retry = (sender_timestamp == client->last_timestamp);
@@ -869,7 +1028,7 @@ bool MyMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const uint8_t 
 void MyMesh::onControlDataRecv(mesh::Packet* packet) {
   uint8_t type = packet->payload[0] & 0xF0;    // just test upper 4 bits
   if (type == CTL_TYPE_NODE_DISCOVER_REQ && packet->payload_len >= 6
-      && !_prefs.disable_fwd && discover_limiter.allow(rtc_clock.getCurrentTime())
+      && !_prefs.disable_fwd && !isHiddenNode() && discover_limiter.allow(rtc_clock.getCurrentTime())
   ) {
     int i = 1;
     uint8_t  filter = packet->payload[i++];
@@ -987,6 +1146,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.flood_max_advert = 8;
   _prefs.interference_threshold = 0; // disabled
   _prefs.cad_enabled = 0;            // hardware CAD before TX (off by default; 'set cad on')
+  _prefs.loop_detect = LOOP_DETECT_MINIMAL;  // as upstream repeaters from 1.18: new installs only
 
   // bridge defaults
   _prefs.bridge_enabled = 1;    // enabled
@@ -1024,10 +1184,13 @@ void MyMesh::begin(FILESYSTEM *fs) {
   mesh::Mesh::begin();
   _fs = fs;
   // load edge-relay policy; an invalid/missing policy fails closed (receive-only)
-  memset(&edge_stats, 0, sizeof(edge_stats));
   if (!edge_policy.load(_fs)) {
     MESH_DEBUG_PRINTLN("edge: no valid policy file, running receive-only until configured (see 'edge' CLI)");
   }
+  // lifetime counts: none, a half-written file or another firmware's start from zero
+  edge_stats.clear();
+  edgeLoadStats(_fs, edge_stats);
+  edge_stats.saved_ms = millis();
   // load persisted prefs
   _cli.loadPrefs(_fs);
   acl.load(_fs, self_id);
@@ -1066,8 +1229,7 @@ void MyMesh::begin(FILESYSTEM *fs) {
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
   MESH_DEBUG_PRINTLN("RX Boosted Gain Mode: %s",
                      radio_driver.getRxBoostedGainMode() ? "Enabled" : "Disabled");
-  board.setLoRaFemLnaEnabled(_prefs.radio_fem_rxgain);
-  board.setLoRaFemPaGainEnabled(_prefs.radio_fem_txgain);
+  board.attachDynamicPrefs(_prefs.getCustom());  // MeshCore 1.18: board settings (FEM gains etc.) as dynamic prefs
 
   updateAdvertTimer();
   updateFloodAdvertTimer();
@@ -1270,15 +1432,21 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
 
   if (*args == 0 || strcmp(args, "help") == 0) {
     Serial.println("edge status                  - show policy + counters");
+    Serial.println("edge stats [boot|life|drops [life]|owners|late] - counts by kind, since boot or lifetime");
+    Serial.println("edge stats save|reset        - save the lifetime counts now / zero both sets");
     Serial.println("edge owner list              - list owner pubkeys");
     Serial.println("edge owner show <idx>        - show one owner pubkey in reply");
     Serial.println("edge owner add <64 hex>      - add owner, save");
     Serial.println("edge owner del <64 hex>      - remove owner, save");
     Serial.println("edge chan list               - list mirrored channel hashes");
-    Serial.println("edge chan add <2 hex>        - add channel, save");
-    Serial.println("edge chan del <2 hex>        - remove channel, save");
+    Serial.println("edge chan add <ch>           - add channel, save (ch: Public, #name, or 2-hex hash)");
+    Serial.println("edge chan del <ch>           - remove channel, save");
+    Serial.println("edge wardrive list           - list wardriving channel hashes");
+    Serial.println("edge wardrive add <ch>       - wardriving channel (#wardriving): send on, echoes back with path, save");
+    Serial.println("edge wardrive del <ch>       - remove wardriving channel, save");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
+    Serial.println("edge trace_snr [<dB>|off]    - transparent trace threshold, -20 to 30 (default 6), save");
     strcpy(reply, "OK");
     return;
   }
@@ -1288,16 +1456,37 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.printf("  owners: %d  channels: %d  mirror_adverts: %d  fwd_acks: %d\n",
                   edge_policy.getNumOwners(), edge_policy.getNumChannels(),
                   edge_policy.getMirrorAdverts() ? 1 : 0, edge_policy.getFwdAcks() ? 1 : 0);
-    Serial.printf("  uplink_fwd: %lu  local_copy: %lu  direct_fwd: %lu  dropped: %lu\n",
-                  (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_local_copy,
-                  (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
-    // Compact summary in the reply as well: the reply channel always reaches
-    // the terminal, Serial block output may not on some setups.
-    snprintf(reply, 160, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu drop:%lu",
-             edge_policy.isValid() ? 1 : 0,
-             edge_policy.getNumOwners(), edge_policy.getNumChannels(),
-             (unsigned long) edge_stats.n_owner_uplink, (unsigned long) edge_stats.n_local_copy,
-             (unsigned long) edge_stats.n_direct_fwd, (unsigned long) edge_stats.n_dropped);
+    // The counters are in the reply: the reply channel always reaches the terminal, Serial block output may
+    // not on some setups. `edge stats` has them by kind, and lifetime.
+    edgeStatusReply(edge_policy, edge_stats, reply, EDGE_REPLY_MAX);
+    return;
+  }
+
+  if (strcmp(args, "trace_snr") == 0 || strncmp(args, "trace_snr ", 10) == 0) {
+    // transparent trace: a fresh trace not naming the car, heard at this SNR or better, is sent on (EdgePolicy.h)
+    if (edgeTraceSnrCommand(edge_policy, args[9] ? args + 10 : "", reply, EDGE_REPLY_MAX) && !edge_policy.save(_fs)) {
+      strcpy(reply, "Err - save failed");
+    }
+    return;
+  }
+
+  if (strcmp(args, "stats save") == 0 || strcmp(args, "stats reset") == 0) {  // the stats file, not the policy
+    if (args[6] == 'r') {
+      EdgeOwnerStat keep[EDGE_STATS_OWNERS];  // who the owners are stays; their counts go
+      memcpy(keep, edge_stats.owners, sizeof(keep));
+      edge_stats.clear();
+      for (int i = 0; i < EDGE_STATS_OWNERS; i++) {
+        memcpy(edge_stats.owners[i].prefix, keep[i].prefix, 4);
+        edge_stats.owners[i].heard_ms = keep[i].heard_ms;
+        edge_stats.owners[i].snr4 = keep[i].snr4;
+      }
+    }
+    bool ok = edgeSaveStats();
+    strcpy(reply, ok ? (args[6] == 'r' ? "OK - stats reset" : "OK - stats saved") : "Err - stats save failed");
+    return;
+  }
+  if (strcmp(args, "stats") == 0 || strncmp(args, "stats ", 6) == 0) {
+    edgeStatsReply(edge_stats, args[5] ? args + 6 : "", reply, EDGE_REPLY_MAX, millis());
     return;
   }
 
@@ -1375,13 +1564,46 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     char* end = hex + strlen(hex);
     while (end > hex && *(end - 1) == ' ') *(--end) = 0;
     uint8_t h;
-    if (strlen(hex) != 2 || !mesh::Utils::fromHex(&h, 1, hex)) {
-      strcpy(reply, "Err - bad channel hash (need 2 hex chars)");
+    const char *name, *err;
+    if (!edgeChannelHash(hex, &h, &name, &err)) {
+      strcpy(reply, err);
       return;
     }
     bool ok = is_add ? (edge_policy.addChannel(h) >= 0) : edge_policy.removeChannel(h);
     if (ok && edge_policy.save(_fs)) {
-      strcpy(reply, is_add ? "OK - channel added" : "OK - channel removed");
+      snprintf(reply, 160, "OK - channel %02x%s%s%s %s", h, *name ? " (" : "", name, *name ? ")" : "",
+               is_add ? "added" : "removed");
+    } else {
+      strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
+    }
+    return;
+  }
+
+  if (strcmp(args, "wardrive list") == 0) {
+    char* p = reply;
+    p += snprintf(p, 160, "OK - wardrive(%d):", edge_policy.getNumWardrive());
+    for (int i = 0; i < edge_policy.getNumWardrive(); i++) {
+      p += snprintf(p, 160 - (p - reply), " %02x", edge_policy.getWardriveHash(i));
+    }
+    return;
+  }
+
+  if (memcmp(args, "wardrive add ", 13) == 0 || memcmp(args, "wardrive del ", 13) == 0) {
+    bool is_add = (args[9] == 'a');
+    char* hex = args + 13;
+    while (*hex == ' ') hex++;
+    char* end = hex + strlen(hex);
+    while (end > hex && *(end - 1) == ' ') *(--end) = 0;
+    uint8_t h;
+    const char *name, *err;
+    if (!edgeChannelHash(hex, &h, &name, &err)) {
+      strcpy(reply, err);
+      return;
+    }
+    bool ok = is_add ? (edge_policy.addWardrive(h) >= 0) : edge_policy.removeWardrive(h);
+    if (ok && edge_policy.save(_fs)) {
+      snprintf(reply, 160, "OK - wardriving channel %02x%s%s%s %s", h, *name ? " (" : "", name, *name ? ")" : "",
+               is_add ? "added" : "removed");
     } else {
       strcpy(reply, is_add ? "Err - duplicate, full, or save failed" : "Err - not found or save failed");
     }
@@ -1494,6 +1716,13 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
   } else if (memcmp(command, "edge ", 5) == 0 || strcmp(command, "edge") == 0) {
     handleEdgeCommand(command + (command[4] == ' ' ? 5 : 4), reply);
   } else{
+    // A reboot or power-off asked for does not return: save the lifetime edge counts since the last save first
+    // (the same prefixes CommonCLI matches).
+    if (memcmp(command, "reboot", 6) == 0 || memcmp(command, "clkreboot", 9) == 0 ||
+        memcmp(command, "poweroff", 8) == 0 || memcmp(command, "shutdown", 8) == 0 ||
+        memcmp(command, "start ota", 9) == 0) {
+      edgeSaveStats();
+    }
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
 }
@@ -1524,6 +1753,9 @@ void MyMesh::loop() {
     acl.save(_fs);
     dirty_contacts_expiry = 0;
   }
+
+  // the lifetime edge counts, when they changed, every EDGE_STATS_SAVE_MS (a crash loses at most that)
+  if (edge_stats.dirty && millis() - edge_stats.saved_ms >= EDGE_STATS_SAVE_MS) edgeSaveStats();
 
   // update uptime
   uint32_t now = millis();
