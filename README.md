@@ -25,6 +25,8 @@ stock `simple_repeater` example, which is left untouched:
   path) and no return path is learned through the car.
 - **Traces:** relayed when the car is the next hop the trace names (anyone's, since a trace names no
   sender; at most 10 a minute). They let you measure the links through the car and teach no routes.
+  A fresh trace heard loud from inside the car that does not name it is sent on unchanged, and its
+  result handed back (transparent trace, below).
 - **Everything else:** dropped.
 
 ## What changed vs upstream
@@ -35,7 +37,9 @@ Based on MeshCore **1.18.0** (`repeater-v1.18.0`). All changes are confined to `
 
 | Area | Change |
 |---|---|
-| `EdgePolicy.h` / `EdgePolicy.cpp` (new) | Packet classifier, persisted configuration, per-class rate limiting, counters. |
+| `EdgePolicy.h` / `EdgePolicy.cpp` (new) | Packet classifier, persisted configuration, per-class rate limiting, the stats file. |
+| `EdgeStats.h` (new) | What the relay did, counted since boot and lifetime (`edge stats`, request `0xC0`). |
+| `EdgeTrace.h` (new) | Trace hop checks and the transparent trace ring. |
 | `MyMesh::onRecvPacket()` | Every received packet is classified **before** stock handling: `EDGE_STOCK` (proceed), `EDGE_LOCAL_COPY` (re-emit once as zero-hop direct, drop original), or `EDGE_DROP`. |
 | `MyMesh::allowPacketForward()` | Final deny guard — stock forwarding is permitted only for packets the policy approved. |
 | `sendSelfAdvertisement()` | No-op. The car **never** advertises, so the mesh never learns routes through a moving node. |
@@ -55,7 +59,7 @@ Based on MeshCore **1.18.0** (`repeater-v1.18.0`). All changes are confined to `
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Forward when the car is the named next hop (a delivery receipt on an owner's route), and the multi-ACK form (`MULTIPART` wrapping an ACK): receipt-sized only (4-8 bytes), at most 30 a minute, since an ACK names no sender |
 | `ANON_REQ` (a login) | Forward an owner's own, heard directly, to another node: it carries the sender's full public key, checked against the owner list (a flood login to the car itself is still dropped) | Forward an owner's when the car is the named next hop. Zero-hop to the car itself: info queries, password login, and the resulting admin session (stock crypto auth still enforced) |
-| `TRACE` | — (always sent direct) | Relayed when the car is the next hop on the trace's own list, at most 10 a minute |
+| `TRACE` | — (always sent direct) | Relayed when the car is the next hop on the trace's own list, at most 10 a minute. Not naming the car: a fresh one heard at `trace_snr` or better is sent on unchanged, and its completed result handed back (transparent trace) |
 | `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop. Zero-hop control is handled as stock, except that the car **does not answer node discovery**: it never advertises, and from MeshCore 1.18 a node that does not advertise is not discoverable |
 
@@ -81,6 +85,24 @@ Notes:
   office-to-car and car-to-repeater links without making the car transit for anything else. It names no
   sender, so it cannot be limited to owners; relayed traces are capped at 10 a minute instead. To trace
   through the car you need its hash: `get public.key` on its serial console (it does not answer discovery).
+- **Transparent trace.** MeshMapper's trace mode on your pocket companion traces one repeater (`[R1]`), so
+  the trace does not name the car, and the car would drop it. With transparent trace the car sends it on
+  **unchanged**: it adds no hop and no SNR of its own, so the trace reads as if your pocket companion had
+  reached `R1` itself. That is the car's coverage, which is what MeshMapper maps.
+  - **Out:** a direct trace with nothing traced yet, not naming the car, heard at `trace_snr` (default
+    6 dB) or better. A trace has no sender to check against the owner list. A loud one is from inside the
+    car (your phone is a few feet away); a stranger's down the road is not.
+  - **Back:** `R1` answers with the trace complete. The car hands that back down, as heard, if it sent the
+    trace out in the last 8 s (matched by its tag), so your pocket companion hears its result. Any other
+    completed trace is not the car's to send, and is dropped.
+  - Counted once per trace, as `trt` in `edge stats`. Going out shares the 10 a minute with traces that
+    name the car (`rl tr`); the answer back does not spend it again (there is at most one per trace
+    sent). With repeat off (`set repeat off`) nothing goes out.
+  - A stranger's trace heard that loud would go out once; the rate limit and `R1`'s own duplicate check
+    bound it. `edge trace_snr off` turns transparent trace off.
+  - **Downgrading:** a `trace_snr` line is written to `/edge_policy` only when it is not the default.
+    Firmware older than this treats it as unknown and boots receive-only (fail closed). Run
+    `edge trace_snr 6` before flashing an older build.
 - **Wardriving (MeshMapper).** `edge wardrive add 81` (81 is `#wardriving`'s hash) makes the car behave
   like a repeater for your wardriving pings, and pass their echoes back down to you:
   - A post on that channel heard zero-hop is sent on, as on any configured channel.
@@ -132,9 +154,57 @@ edge wardrive add <ch>       - wardriving channel (#wardriving): send on, hand e
 edge wardrive del <ch>       - remove wardriving channel, save
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
+edge trace_snr [<dB>|off]    - transparent trace threshold, -20 to 30, save (default 6); alone: show it
+edge stats [<page>]          - counts by kind: boot (default), life, drops, drops life, owners, late
+edge stats save              - save the lifetime counts now
+edge stats reset             - zero both sets (owners stay listed), save
 ```
 
 Configuration persists to `/edge_policy` on the device filesystem.
+
+`edge status` replies `OK - valid:1 owners:1 ch:1 up:… copy:… dfwd:… trace:… drop:… wd:0 wde:…`. The
+counts are since boot, and each total is the sum of these `edge stats` counters:
+
+- `up`: owner floods, wardriving posts, and owners' logins (flood, or routed through the car) sent on
+  (`up` + `wdp` + `login`).
+- `copy`: local copies (`copy`).
+- `dfwd`: owners' other direct packets routed through the car, and receipts: direct ones naming the car, and
+  flood ones with `fwd_acks 1` (`dfwd` + `ack`).
+- `trace`: traces naming the car, and transparent traces (`tr` + `trt`).
+- `drop`: everything not sent on, for every reason: policy, packet pool empty, each rate limit, and
+  wardriving echoes of posts the car did not send on (the whole `stats drops` page).
+- `wde`: wardriving echoes handed down (`wde`).
+
+Earlier firmware counted these differently: a login routed through the car in `dfwd`, a flood receipt
+heard directly in `up`, an owner flood as it was heard rather than when it was sent on, and wardriving
+echo losses not at all.
+
+#### Edge stats
+
+What the car did, counted two ways: **since boot**, and **lifetime**, which survives reboots. Lifetime
+counts are saved to `/edge_stats` every 6 hours when they changed, on `edge stats save`, and before a
+reboot or power-off you ask for (`reboot`, `clkreboot`, `poweroff`, `shutdown`, `start ota`, or holding
+the user button). A crash or a pulled battery loses at most the 6 hours since the last save. A missing or
+half-written file starts them from zero.
+
+| Page | What it counts |
+|---|---|
+| `stats` / `stats boot` / `stats life` | sent on: `up` owner floods, `copy` zero-hop copies, `dfwd` direct, `ack` receipts, `tr` traces naming the car, `trt` owners' traces through it (transparent), `wdp` wardriving posts, `wde` echoes handed down, `login` owners' logins |
+| `stats drops` / `stats drops life` | not sent on, by reason: `pol` not an owner's or a chosen channel; `nobuf` packet pool empty; `rl` over a rate limit (`copy`, `ack`, `tr`, `echo`); `notours` a wardriving echo of a post the car did not send on |
+| `stats owners` | each owner by key prefix: packets sent on (DMs, requests and logins; a channel post names no sender), and when it was last heard directly, at what SNR (since boot) |
+| `stats late` | late relay, which this firmware does not have: always 0 (kept so the counter list, and the `0xC0` frame, has a fixed layout) |
+
+Each page fits one reply over the mesh, even with every count at its largest. If the last save of the
+lifetime counts failed, `stats life` reads `life save FAILED`.
+
+**For a console:** a logged-in client can ask for request type `0xC0` (`EDGE_REQ_GET_EDGE_STATS`, one
+data byte: 0 since boot, 1 lifetime). The answer, after the 4-byte tag, is
+`[version 1][set][flags][owners][channels][wardrive][count N][N × uint32 LE]`, in the order of `EdgeStat`
+(`EdgeStats.h`). flags: bit 0 edge on (always, on the relay),
+1 valid policy, 2 late relay (never, on the relay), 3 receipts forwarded, 4 adverts mirrored, 5 the last
+lifetime save failed. `0xC0` is ours, not an upstream allocation. A stock node does not answer it, which
+is how a console tells an edge node from any other. As with any admin traffic to the car, the request
+must come from direct radio range.
 
 #### Adding your companions
 
@@ -198,8 +268,9 @@ car extends it, and have MeshMapper credit the real repeaters, not the car.
   MeshMapper records the repeater, not the signal.
 - **Discovery (DISC):** answered by repeaters your pocket node reaches directly. The relay does not
   answer discovery (it never advertises). Discovery is zero-hop by design, so the car cannot extend it.
-- **Traces:** MeshMapper's targeted trace names one repeater, so it reaches only repeaters your pocket
-  node hears directly. (A trace that names the car first, from another tool, is relayed.)
+- **Traces:** MeshMapper's targeted trace names one repeater. The car sends it on unchanged and hands the
+  result back (transparent trace, above), so it maps the repeaters the car reaches. `edge stats` counts
+  them as `trt`. (A trace that names the car first, from another tool, is relayed as before.)
 - `edge status` shows `wde:` (echoes handed down) climbing while you wardrive.
 
 Without the CARpeater setting, echoes handed down by the car are not uploaded: at the car's usual in-cabin
@@ -224,8 +295,10 @@ workflow from the Actions tab and download the artifact (`.uf2` for the
 RAK4631).
 
 See the [upstream README](https://github.com/meshcore-dev/MeshCore#readme)
-for hardware compatibility, the web flasher, clients, and unit tests
-(`pio test -e native` covers `src/`, which this fork does not modify).
+for hardware compatibility, the web flasher, clients, and unit tests.
+`pio test -e native` also runs this fork's own tests (`test/test_edge_*`: the edge policy, its files,
+stats, traces and wardriving), and `pio test -e native_real_crypto` the channel hashes on the real
+SHA-256.
 
 ## Goals and non-goals
 

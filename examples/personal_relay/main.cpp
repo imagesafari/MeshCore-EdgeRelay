@@ -108,6 +108,7 @@ void setup() {
 
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
+  ui_task.onPowerOff([] { the_mesh.edgeSaveStats(); });  // the lifetime edge counts since the last save
 #endif
 
 #ifdef ETHERNET_ENABLED
@@ -178,6 +179,7 @@ void loop() {
       userBtnDownAt = millis();
     } else if ((unsigned long)(millis() - userBtnDownAt) >= USER_BTN_HOLD_OFF_MILLIS) {
       Serial.println("Powering off...");
+      the_mesh.edgeSaveStats();  // the lifetime edge counts since the last save
       board.powerOff();  // does not return
     }
   } else {

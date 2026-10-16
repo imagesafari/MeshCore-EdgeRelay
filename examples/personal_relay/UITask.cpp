@@ -144,6 +144,7 @@ void UITask::loop() {
     digitalWrite(LED_PIN, LED_STATE_ON); // switch on the led until poweroff
 #endif
     if (millis() > _powering_off_at) {
+      if (_on_power_off) _on_power_off();
       _board->powerOff();  // should not return
     }
   }
