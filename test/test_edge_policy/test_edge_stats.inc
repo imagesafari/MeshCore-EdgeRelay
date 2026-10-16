@@ -259,3 +259,43 @@ TEST(EdgeStatsFile, AMissingHalfWrittenOrOversizedFileIsNotUsed) {
   EXPECT_FALSE(edgeLoadStats(&fs, b)) << "larger than any this firmware writes";
   for (int i = 0; i < ES_COUNT; i++) EXPECT_EQ(b.life[i], 0u) << "nothing half-loaded";
 }
+
+TEST(EdgeStatsFile, PowerLostBetweenRemoveAndRenameKeepsTheCounts) {
+  // SPIFFS (every ESP32 relay) will not rename over a file, so the save removes the old one first; if power goes
+  // before the rename, only the new file is left. The next boot reads it.
+  MockFS fs;
+  EdgeStats a;
+  a.clear();
+  a.add(ES_COPY);
+  a.add(ES_COPY);
+  char text[EDGE_STATS_TEXT_MAX];
+  int n = a.serialize(text, sizeof(text));
+  fs.files[EDGE_STATS_FILE_NEW] = std::string(text, n);
+  EdgeStats b;
+  b.clear();
+  ASSERT_TRUE(edgeLoadStats(&fs, b)) << "the main file is missing: the new one is used";
+  EXPECT_EQ(b.life[ES_COPY], 2u);
+  fs.files[EDGE_STATS_FILE_NEW] = std::string(text, n - 3);
+  EdgeStats c;
+  c.clear();
+  EXPECT_FALSE(edgeLoadStats(&fs, c)) << "a half-written new file is not used either";
+  EXPECT_EQ(c.life[ES_COPY], 0u);
+}
+
+TEST(EdgeStatsFile, AFailedRenameNeverDeletesTheNewFile) {
+  MockFS fs;
+  fs.rename_overwrites = false;  // SPIFFS
+  EdgeStats a;
+  a.clear();
+  a.add(ES_ACK);
+  ASSERT_TRUE(edgeSaveStats(&fs, a, 1));
+  a.add(ES_ACK);
+  fs.fail_renames = true;
+  EXPECT_FALSE(edgeSaveStats(&fs, a, 2));
+  EXPECT_TRUE(a.save_failed);
+  ASSERT_EQ(fs.files.count(EDGE_STATS_FILE_NEW), 1u) << "the only copy of the latest counts";
+  EdgeStats b;  // the next boot
+  b.clear();
+  ASSERT_TRUE(edgeLoadStats(&fs, b));
+  EXPECT_EQ(b.life[ES_ACK], 2u) << "the latest counts, from the new file";
+}

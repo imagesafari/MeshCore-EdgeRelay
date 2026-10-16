@@ -470,8 +470,10 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   return true;
 }
 
-bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats) {
-  File f = openEdgeRead(fs, EDGE_STATS_FILE);
+// One stats file into `stats`. `found`: whether the file was there at all.
+static bool readStatsFile(FILESYSTEM* fs, const char* path, EdgeStats& stats, bool& found) {
+  File f = openEdgeRead(fs, path);
+  found = (bool)f;
   if (!f) return false;
   char text[EDGE_STATS_TEXT_MAX];
   size_t n = 0;
@@ -488,6 +490,15 @@ bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats) {
   return stats.parse(text);
 }
 
+bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats) {
+  bool found;
+  bool ok = readStatsFile(fs, EDGE_STATS_FILE, stats, found);
+  if (found) return ok;
+  // No main file: a save on SPIFFS removes it before renaming the new one over, so power lost between the two
+  // leaves only the new one. It is used if it is whole (parse() refuses a half-written one).
+  return readStatsFile(fs, EDGE_STATS_FILE_NEW, stats, found);
+}
+
 bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms) {
   char text[EDGE_STATS_TEXT_MAX];
   int n = stats.serialize(text, sizeof(text));
@@ -497,12 +508,14 @@ bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms) {
     ok = f && f.write((const uint8_t*)text, (size_t)n) == (size_t)n;
     if (f) f.close();
   }
-  if (ok && !fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE)) {
-    // LittleFS renames over a file; SPIFFS will not, so make room
+  if (!ok) {
+    fs->remove(EDGE_STATS_FILE_NEW);  // not written whole: the saved counts stay as they were
+  } else if (!fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE)) {
+    // LittleFS renames over a file; SPIFFS (ESP32) will not, so make room. From here the new file may be the only
+    // copy of the counts: it is never removed, and edgeLoadStats() reads it when the main file is missing.
     fs->remove(EDGE_STATS_FILE);
     ok = fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE);
   }
-  if (!ok) fs->remove(EDGE_STATS_FILE_NEW);
   stats.saved_ms = now_ms;    // a failed save is tried again at the next interval, not at once
   stats.save_failed = !ok;    // said on `edge stats life` and in the 0xC0 flags, not kept quiet
   if (ok) stats.dirty = false;

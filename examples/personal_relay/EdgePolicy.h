@@ -159,10 +159,12 @@ public:
 };
 
 // --- edge stats (EdgeStats.h) on the filesystem ---
-// Reads the lifetime counts from EDGE_STATS_FILE. No file, a half-written one or another firmware's: false, and
-// the lifetime counts are left as they were (zero at boot).
+// Reads the lifetime counts from EDGE_STATS_FILE, or from EDGE_STATS_FILE_NEW when the main file is missing (a
+// save cut short between its remove and its rename). No file, a half-written one or another firmware's: false,
+// and the lifetime counts are left as they were (zero at boot).
 bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats);
-// Writes them beside the file and renames that over it, so a failed write never costs the saved counts. Sets
+// Writes them beside the file and renames that over it, so a failed write never costs the saved counts, and a
+// failed rename keeps the new file. Sets
 // saved_ms, save_failed (said on `edge stats life` and in the 0xC0 flags) and, on success, clears dirty.
 bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms);
 
