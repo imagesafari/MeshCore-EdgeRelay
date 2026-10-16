@@ -6,6 +6,7 @@ EdgePolicy::EdgePolicy() {
   _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
   _valid = false;   // no policy loaded yet -> fail closed until load() succeeds
   _rl_start_ms = 0;
   _rl_count = 0;
@@ -155,6 +156,19 @@ bool EdgePolicy::tryTrace(uint32_t now_ms) {
   return true;
 }
 
+bool EdgePolicy::setTraceSnr(int db) {
+  if (db != EDGE_TRACE_SNR_OFF && (db < EDGE_TRACE_SNR_MIN || db > EDGE_TRACE_SNR_MAX)) return false;
+  _trace_snr = (int8_t)db;
+  return true;
+}
+
+bool EdgePolicy::setTraceSnrText(const char* text) {
+  if (strcmp(text, "off") == 0) return setTraceSnr(EDGE_TRACE_SNR_OFF);
+  char* end;
+  long db = strtol(text, &end, 10);
+  return end != text && *end == 0 && db >= EDGE_TRACE_SNR_MIN && db <= EDGE_TRACE_SNR_MAX && setTraceSnr((int)db);
+}
+
 static bool isFloodRoute(uint8_t route) {
   return route == ROUTE_TYPE_FLOOD || route == ROUTE_TYPE_TRANSPORT_FLOOD;
 }
@@ -232,8 +246,16 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
   if (isDirectRoute(route)) {
     if (ptype == PAYLOAD_TYPE_TRACE) {
       // A trace's path field holds SNRs, not hashes, so the next-hop rules below do not apply to it: its
-      // hops are listed in the payload (EdgeTrace.h). Relay it only when this node is the next one named.
-      return edgeTraceNextHopIsSelf(pkt, self_hash, self_hash_len) ? EDGE_STOCK : EDGE_DROP;
+      // hops are listed in the payload (EdgeTrace.h). Relayed as stock when this node is the next one named.
+      if (edgeTraceNextHopIsSelf(pkt, self_hash, self_hash_len)) return EDGE_STOCK;
+      // Transparent trace: a fresh one (no hop done yet) heard loud is an owner's in the car: sent on as heard,
+      // and its result handed back down (MyMesh::edgeTraceOn checks the tag). A trace names no sender, so the SNR
+      // is the owner check; a loud stranger's trace (a car alongside) can go too, within the trace rate limit.
+      if (_trace_snr != EDGE_TRACE_SNR_OFF) {
+        if (pkt->path_len == 0 && !edgeTraceComplete(pkt) && pkt->getSNR() >= _trace_snr) return EDGE_TRACE_THROUGH;
+        if (edgeTraceComplete(pkt)) return EDGE_TRACE_BACK;
+      }
+      return EDGE_DROP;
     }
     if (path_count == 0) {
       // Zero-hop direct: link-local only. Allow control (e.g. discovery),
@@ -301,6 +323,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   wardrive <2 hex chars of channel hash>
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
+//   trace_snr <-20..30>|off  (transparent trace; absent means EDGE_TRACE_SNR_DEFAULT, and only then not written)
 // Any parse error invalidates the whole policy (fail closed).
 
 // The policy file and the stats file (EdgeStats.h) open the same way on every platform.
@@ -336,6 +359,7 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
   _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
   return false;
 }
 
@@ -346,6 +370,7 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
   _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
+  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
 
   File f = openEdgeRead(fs, EDGE_POLICY_FILE);
   if (!f) return false;
@@ -386,6 +411,8 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
           _mirror_adverts = (line[15] == '1');
         } else if (memcmp(line, "fwd_acks ", 9) == 0) {
           _fwd_acks = (line[9] == '1');
+        } else if (memcmp(line, "trace_snr ", 10) == 0) {
+          if (!setTraceSnrText(line + 10)) { f.close(); return false; }
         } else {
           f.close(); return false;  // unknown directive -> fail closed
         }
@@ -430,6 +457,14 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   f.println(_mirror_adverts ? "1" : "0");
   f.print("fwd_acks ");
   f.println(_fwd_acks ? "1" : "0");
+  // Written only when not the default, so a policy that never set it stays readable by firmware without it.
+  if (_trace_snr == EDGE_TRACE_SNR_OFF) {
+    f.println("trace_snr off");
+  } else if (_trace_snr != EDGE_TRACE_SNR_DEFAULT) {
+    char db[16];
+    snprintf(db, sizeof(db), "trace_snr %d", (int)_trace_snr);
+    f.println(db);
+  }
   f.close();
   _valid = true;
   return true;
@@ -472,6 +507,22 @@ bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms) {
   stats.save_failed = !ok;    // said on `edge stats life` and in the 0xC0 flags, not kept quiet
   if (ok) stats.dirty = false;
   return ok;
+}
+
+bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap) {
+  bool changed = false;
+  if (arg[0]) {
+    int8_t was = policy.getTraceSnr();
+    if (!policy.setTraceSnrText(arg)) {
+      snprintf(reply, cap, "Err - trace_snr <dB>: %d to %d, or off", EDGE_TRACE_SNR_MIN, EDGE_TRACE_SNR_MAX);
+      return false;
+    }
+    changed = policy.getTraceSnr() != was;
+  }
+  int8_t db = policy.getTraceSnr();
+  if (db == EDGE_TRACE_SNR_OFF) snprintf(reply, cap, "OK - transparent trace off");
+  else snprintf(reply, cap, "OK - transparent trace: traces heard at %d dB or better", (int)db);
+  return changed;
 }
 
 void edgeStatusReply(const EdgePolicy& policy, const EdgeStats& stats, char* reply, size_t cap) {

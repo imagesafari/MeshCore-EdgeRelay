@@ -104,6 +104,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   RateLimiter discover_limiter, anon_limiter;
   EdgePolicy edge_policy;      // directional good-citizen policy for this edge relay
   EdgeWardriveRing wardrive_ring;  // wardriving posts we sent on, whose echoes go back down (EdgeWardrive.h)
+  EdgeTraceRing edge_trace_ring;   // owners' traces sent on through the car, whose results go back down (EdgeTrace.h)
   EdgeStats edge_stats;         // what the edge did, since boot and lifetime (EdgeStats.h)
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
@@ -239,6 +240,7 @@ public:
   void handleEdgeCommand(char* args, char* reply);
   void handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_hash, uint8_t self_len);
   void edgeCountOwner(const mesh::Packet* pkt);
+  void edgeTraceOn(const mesh::Packet* pkt, bool through);
   // Saves the lifetime edge counts now: every EDGE_STATS_SAVE_MS, on `edge stats save`, and before a reboot or
   // power-off that is asked for (CLI, or the user button).
   bool edgeSaveStats();

@@ -40,6 +40,12 @@
 // knows this node's hash could route one through it; this caps that).
 #define EDGE_TRACE_MAX         10
 #define EDGE_TRACE_WINDOW_MS   60000UL
+// Transparent trace: MeshMapper's trace mode on an owner's phone names only the repeater it maps, so the car is not
+// on the trace; a fresh trace heard at this SNR or better is taken as from inside the car (a trace names no sender).
+#define EDGE_TRACE_SNR_DEFAULT 6
+#define EDGE_TRACE_SNR_MIN     (-20)
+#define EDGE_TRACE_SNR_MAX     30
+#define EDGE_TRACE_SNR_OFF     127
 
 // Bytes of this node's public key prefix the callers hand to classify(): enough for any hop hash size.
 #define EDGE_SELF_HASH_MAX     8
@@ -63,7 +69,9 @@ enum EdgeAction {
   EDGE_STOCK,       // hand to stock Mesh::onRecvPacket()
   EDGE_LOCAL_COPY,  // re-emit payload once as zero-hop direct; drop the original
   EDGE_DROP,        // drop the packet entirely
-  EDGE_WARDRIVE_ECHO // an echo on a wardriving channel: hand down with its path if it is of a post we sent on
+  EDGE_WARDRIVE_ECHO, // an echo on a wardriving channel: hand down with its path if it is of a post we sent on
+  EDGE_TRACE_THROUGH, // a fresh trace that does not name us, heard loud (an owner's, in the car): send it on as heard
+  EDGE_TRACE_BACK     // a completed trace: hand it back down as heard, if it is one we sent on (EdgeTraceRing)
 };
 
 class EdgePolicy {
@@ -75,6 +83,7 @@ class EdgePolicy {
   uint8_t _num_wardrive;
   bool _mirror_adverts;   // re-emit selected remote adverts locally (default: false)
   bool _fwd_acks;         // forward ACKs naming this node (default: false)
+  int8_t _trace_snr;      // transparent trace: a fresh trace heard at this SNR (dB) or better; EDGE_TRACE_SNR_OFF
   bool _valid;            // false -> fail closed (receive-only)
 
   // sliding-window rate limiter for local copies
@@ -114,6 +123,10 @@ public:
   void setFwdAcks(bool v) { _fwd_acks = v; }
   bool getMirrorAdverts() const { return _mirror_adverts; }
   bool getFwdAcks() const { return _fwd_acks; }
+  bool setTraceSnr(int db);  // EDGE_TRACE_SNR_MIN to EDGE_TRACE_SNR_MAX, or EDGE_TRACE_SNR_OFF
+  int8_t getTraceSnr() const { return _trace_snr; }
+  // The same as text, as the policy file and `edge trace_snr` give it: "<dB>" or "off". False if not one.
+  bool setTraceSnrText(const char* text);
   uint8_t getNumOwners() const { return _num_owners; }
   uint8_t getNumChannels() const { return _num_channels; }
   const uint8_t* getOwnerKey(int i) const { return _owner_keys[i]; }
@@ -152,6 +165,10 @@ bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats);
 // Writes them beside the file and renames that over it, so a failed write never costs the saved counts. Sets
 // saved_ms, save_failed (said on `edge stats life` and in the 0xC0 flags) and, on success, clears dirty.
 bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms);
+
+// `edge trace_snr [<dB>|off]`: sets the transparent trace threshold if `arg` is not empty, and says what it is.
+// True if it changed it (the caller saves the policy); a bad value is an Err reply and changes nothing.
+bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap);
 
 // `edge status`: the settings, then the totals since boot. The totals mean what they always did: up is owner
 // floods, wardriving posts and logins sent on; dfwd direct packets and receipts; trace both kinds; drop every

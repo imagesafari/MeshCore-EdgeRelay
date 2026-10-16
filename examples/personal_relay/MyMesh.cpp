@@ -625,6 +625,10 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       }
       return ACTION_RELEASE;
     }
+    if (edge_action == EDGE_TRACE_THROUGH || edge_action == EDGE_TRACE_BACK) {
+      edgeTraceOn(pkt, edge_action == EDGE_TRACE_THROUGH);
+      return ACTION_RELEASE;
+    }
     if (edge_action == EDGE_WARDRIVE_ECHO) {
       // Usually a repeat of a post we sent on, so already seen: that is the point (EdgeWardrive.h).
       if (!getTables()->wasSeen(pkt)) {  // never a post we sent: nothing to hand down
@@ -735,6 +739,48 @@ void MyMesh::handWardriveEchoDown(const mesh::Packet* echo, const uint8_t* self_
   memcpy(copy->payload, echo->payload, echo->payload_len);
   sendDirect(copy, path, path_len, getRetransmitDelay(copy));  // [us, R1, ...]: only we are named next
   edge_stats.add(ES_WD_ECHO);
+}
+
+// Transparent trace: an owner's trace that does not name the car goes out as heard (through), and its completed
+// result, when the repeater it went to sends it back, comes down as heard (back): MeshMapper's trace mode then works
+// through the car, which is on neither the path nor the result. Sent as heard, not by sendDirect(), which would move
+// a trace's SNR list into its payload.
+void MyMesh::edgeTraceOn(const mesh::Packet* pkt, bool through) {
+  // Once per packet: a trace's hash includes how far it has got, so the result is never the one sent out.
+  if (getTables()->wasSeen(pkt)) return;
+  getTables()->markSeen(pkt);
+  if (!through && !edge_trace_ring.take(edgeTraceTag(pkt), millis())) {  // someone else's trace, done
+    edge_stats.add(ES_DROP_POLICY);
+    return;
+  }
+  if (through) {
+    if (_prefs.disable_fwd) return;  // repeat off: the car sends nothing on, as for a trace naming it
+    // The rate limit is spent going out; the answer back is already bounded to one per trace sent (the ring entry
+    // is taken once), and spending a second token there could strand the answer to a trace already sent.
+    if (!edge_policy.tryTrace(millis())) {
+      MESH_DEBUG_PRINTLN("edge: trace rate limit reached");
+      edge_stats.add(ES_RL_TRACE);
+      return;
+    }
+  }
+  mesh::Packet* copy = obtainNewPacket();
+  if (!copy) {
+    MESH_DEBUG_PRINTLN("edge: packet pool empty, trace dropped");
+    edge_stats.add(ES_DROP_NOBUF);
+    return;
+  }
+  copy->header = pkt->header;
+  copy->transport_codes[0] = pkt->transport_codes[0];
+  copy->transport_codes[1] = pkt->transport_codes[1];
+  copy->payload_len = pkt->payload_len;
+  memcpy(copy->payload, pkt->payload, pkt->payload_len);
+  copy->path_len = pkt->path_len;  // the SNRs so far (a trace's path_len counts them: edgeTraceComplete bounds it)
+  memcpy(copy->path, pkt->path, pkt->path_len);
+  sendPacket(copy, 5, getDirectRetransmitDelay(copy));  // priority 5, as stock sends a trace on
+  if (through) {
+    edge_trace_ring.remember(edgeTraceTag(pkt), millis());
+    edge_stats.add(ES_TRACE_THROUGH);  // one per trace: its answer handed back is not counted again
+  }
 }
 
 // An owner's packet this node sent on (its sender named by its 1-byte hash, or, for a login, its whole key).
@@ -1400,6 +1446,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge wardrive del <ch>       - remove wardriving channel, save");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
+    Serial.println("edge trace_snr [<dB>|off]    - transparent trace threshold, -20 to 30 (default 6), save");
     strcpy(reply, "OK");
     return;
   }
@@ -1412,6 +1459,14 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     // The counters are in the reply: the reply channel always reaches the terminal, Serial block output may
     // not on some setups. `edge stats` has them by kind, and lifetime.
     edgeStatusReply(edge_policy, edge_stats, reply, EDGE_REPLY_MAX);
+    return;
+  }
+
+  if (strcmp(args, "trace_snr") == 0 || strncmp(args, "trace_snr ", 10) == 0) {
+    // transparent trace: a fresh trace not naming the car, heard at this SNR or better, is sent on (EdgePolicy.h)
+    if (edgeTraceSnrCommand(edge_policy, args[9] ? args + 10 : "", reply, EDGE_REPLY_MAX) && !edge_policy.save(_fs)) {
+      strcpy(reply, "Err - save failed");
+    }
     return;
   }
 

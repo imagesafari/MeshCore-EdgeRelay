@@ -1,5 +1,7 @@
 #pragma once
 
+// The same file is in the edge companion (examples/companion_radio/edge/EdgeTrace.h), but for this line.
+
 #include <stdint.h>
 #include <string.h>
 #include <Packet.h>
@@ -27,3 +29,48 @@ inline bool edgeTraceNextHopIsSelf(const mesh::Packet* pkt, const uint8_t* self,
   if (size > self_len || off + size > pkt->payload_len) return false;  // past its last hop, or too wide
   return memcmp(&pkt->payload[off], self, size) == 0;
 }
+
+// Whether a direct TRACE has been everywhere it names: stock then hands it to onTraceRecv on any node that hears it
+// (the sender knows it by its tag). Mirrors stock src/Mesh.cpp: offset (path_len << bits) >= the hop list's length.
+inline bool edgeTraceComplete(const mesh::Packet* pkt) {
+  if (!pkt->isRouteDirect() || pkt->getPayloadType() != PAYLOAD_TYPE_TRACE) return false;
+  if (pkt->payload_len < EDGE_TRACE_HDR || pkt->path_len >= MAX_PATH_SIZE) return false;
+  uint8_t bits = pkt->payload[8] & 0x03;
+  return ((uint32_t)pkt->path_len << bits) >= (uint32_t)(pkt->payload_len - EDGE_TRACE_HDR);
+}
+
+inline uint32_t edgeTraceTag(const mesh::Packet* pkt) {
+  uint32_t tag = 0;
+  if (pkt->payload_len >= 4) memcpy(&tag, pkt->payload, 4);
+  return tag;
+}
+
+// Transparent trace (jon, 15 Oct): the tags of owners' traces this node sent on, so the completed trace with the
+// same tag is handed back down to the owner, who may not hear the repeater it went to. A few seconds each.
+#define EDGE_TRACE_RING      8
+#define EDGE_TRACE_BACK_MS   8000UL
+
+class EdgeTraceRing {
+  uint32_t _tag[EDGE_TRACE_RING];
+  uint32_t _ms[EDGE_TRACE_RING];
+  bool _used[EDGE_TRACE_RING];
+  uint8_t _next;
+public:
+  EdgeTraceRing() : _next(0) { memset(_used, 0, sizeof(_used)); }
+  void remember(uint32_t tag, uint32_t now_ms) {
+    _tag[_next] = tag;
+    _ms[_next] = now_ms;
+    _used[_next] = true;
+    _next = (uint8_t)((_next + 1) % EDGE_TRACE_RING);
+  }
+  // True once for a tag remembered within the window: its result is ours to hand back, once.
+  bool take(uint32_t tag, uint32_t now_ms) {
+    for (int i = 0; i < EDGE_TRACE_RING; i++) {
+      if (_used[i] && _tag[i] == tag && now_ms - _ms[i] <= EDGE_TRACE_BACK_MS) {
+        _used[i] = false;
+        return true;
+      }
+    }
+    return false;
+  }
+};
