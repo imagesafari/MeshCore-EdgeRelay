@@ -25,8 +25,8 @@ stock `simple_repeater` example, which is left untouched:
   path) and no return path is learned through the car.
 - **Traces:** relayed when the car is the next hop the trace names (anyone's, since a trace names no
   sender; at most 10 a minute). They let you measure the links through the car and teach no routes.
-  A fresh trace heard loud from inside the car that does not name it is sent on unchanged, and its
-  result handed back (transparent trace, below).
+  With transparent trace turned on (it is off until `edge trace_snr on`), a fresh trace heard loud from
+  inside the car that does not name it is sent on unchanged, and its result handed back (below).
 - **Everything else:** dropped.
 
 ## What changed vs upstream
@@ -59,7 +59,7 @@ Based on MeshCore **1.18.0** (`repeater-v1.18.0`). All changes are confined to `
 | `ADVERT` from anyone else | Drop (mirroring opt-in only, off by default) | — |
 | `ACK` | Drop (forwarding opt-in only, off by default) | Forward when the car is the named next hop (a delivery receipt on an owner's route), and the multi-ACK form (`MULTIPART` wrapping an ACK): receipt-sized only (4-8 bytes), at most 30 a minute, since an ACK names no sender |
 | `ANON_REQ` (a login) | Forward an owner's own, heard directly, to another node: it carries the sender's full public key, checked against the owner list (a flood login to the car itself is still dropped) | Forward an owner's when the car is the named next hop. Zero-hop to the car itself: info queries, password login, and the resulting admin session (stock crypto auth still enforced) |
-| `TRACE` | — (always sent direct) | Relayed when the car is the next hop on the trace's own list, at most 10 a minute. Not naming the car: a fresh one heard at `trace_snr` or better is sent on unchanged, and its completed result handed back (transparent trace) |
+| `TRACE` | — (always sent direct) | Relayed when the car is the next hop on the trace's own list, at most 10 a minute. Not naming the car: with transparent trace on (off until turned on), a fresh one heard at `trace_snr` or better is sent on unchanged, and its completed result handed back |
 | `MULTIPART`, `RAW_CUSTOM`, unknown | Drop | Drop |
 | `CONTROL` | Drop | Drop. Zero-hop control is handled as stock, except that the car **does not answer node discovery**: it never advertises, and from MeshCore 1.18 a node that does not advertise is not discoverable |
 
@@ -88,9 +88,10 @@ Notes:
 - **Transparent trace.** MeshMapper's trace mode on your pocket companion traces one repeater (`[R1]`), so
   the trace does not name the car, and the car would drop it. With transparent trace the car sends it on
   **unchanged**: it adds no hop and no SNR of its own, so the trace reads as if your pocket companion had
-  reached `R1` itself. That is the car's coverage, which is what MeshMapper maps.
-  - **Out:** a direct trace with nothing traced yet, not naming the car, heard at `trace_snr` (default
-    6 dB) or better. A trace has no sender to check against the owner list. A loud one is from inside the
+  reached `R1` itself. That is the car's coverage, which is what MeshMapper maps. **Off until turned
+  on:** `edge trace_snr on` (6 dB), or a threshold in dB.
+  - **Out:** a direct trace with nothing traced yet, not naming the car, heard at `trace_snr` or better
+    (`on` sets 6 dB). A trace has no sender to check against the owner list. A loud one is from inside the
     car (your phone is a few feet away); a stranger's down the road is not.
   - **Back:** `R1` answers with the trace complete. The car hands that back down, as heard, if it sent the
     trace out in the last 8 s (matched by its tag), so your pocket companion hears its result. Any other
@@ -100,9 +101,11 @@ Notes:
     sent). With repeat off (`set repeat off`) nothing goes out.
   - A stranger's trace heard that loud would go out once; the rate limit and `R1`'s own duplicate check
     bound it. `edge trace_snr off` turns transparent trace off.
-  - **Downgrading:** a `trace_snr` line is written to `/edge_policy` only when it is not the default.
-    Firmware older than this treats it as unknown and boots receive-only (fail closed). Run
-    `edge trace_snr 6` before flashing an older build.
+  - **Saved explicitly, `off` too.** The `trace_snr` line is always written to `/edge_policy`, because
+    v0.4.0-beta.1 (on at 6 dB by default) reads a missing line as on: flashing back to it keeps what you
+    set. A file with no line (one saved by v0.4.0-beta.1 at its default) now reads as off.
+  - **Downgrading below v0.4.0-beta.1:** that firmware does not know the line, treats it as unknown and
+    boots receive-only (fail closed). No setting avoids this; set edge up again after flashing.
 - **Wardriving (MeshMapper).** `edge wardrive add 81` (81 is `#wardriving`'s hash) makes the car behave
   like a repeater for your wardriving pings, and pass their echoes back down to you:
   - A post on that channel heard zero-hop is sent on, as on any configured channel.
@@ -154,7 +157,7 @@ edge wardrive add <ch>       - wardriving channel (#wardriving): send on, hand e
 edge wardrive del <ch>       - remove wardriving channel, save
 edge opt mirror_adverts 0|1  - remote advert mirroring, save (default 0)
 edge opt fwd_acks 0|1        - ACK forwarding, save (default 0)
-edge trace_snr [<dB>|off]    - transparent trace threshold, -20 to 30, save (default 6); alone: show it
+edge trace_snr [<dB>|on|off] - transparent trace threshold, -20 to 30, save (off until on; on = 6); alone: show it
 edge stats [<page>]          - counts by kind: boot (default), life, drops, drops life, owners, late
 edge stats save              - save the lifetime counts now
 edge stats reset             - zero both sets (owners stay listed), save
@@ -268,8 +271,9 @@ car extends it, and have MeshMapper credit the real repeaters, not the car.
   MeshMapper records the repeater, not the signal.
 - **Discovery (DISC):** answered by repeaters your pocket node reaches directly. The relay does not
   answer discovery (it never advertises). Discovery is zero-hop by design, so the car cannot extend it.
-- **Traces:** MeshMapper's targeted trace names one repeater. The car sends it on unchanged and hands the
-  result back (transparent trace, above), so it maps the repeaters the car reaches. `edge stats` counts
+- **Traces:** MeshMapper's targeted trace names one repeater. With `edge trace_snr on` (off until turned
+  on), the car sends it on unchanged and hands the result back (transparent trace, above), so it maps the
+  repeaters the car reaches. `edge stats` counts
   them as `trt`. (A trace that names the car first, from another tool, is relayed as before.)
 - `edge status` shows `wde:` (echoes handed down) climbing while you wardrive.
 

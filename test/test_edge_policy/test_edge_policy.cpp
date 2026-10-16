@@ -139,11 +139,23 @@ TEST(EdgePolicyRules, ATraceNamingThisNodeIsRelayedEvenWithAnEmptyPath) {
 
 // --- transparent trace: a fresh trace not naming us, heard loud, goes out; its result comes back ---
 
+TEST(EdgeTransparentTrace, ItIsOffUntilTurnedOn) {
+  auto p = validPolicy();
+  EXPECT_EQ(p.getTraceSnr(), EDGE_TRACE_SNR_OFF);
+  const uint8_t r1[] = {0x94};
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, 20)), EDGE_DROP) << "a loud fresh trace not naming us";
+  EXPECT_EQ(cls(p, trace(r1, 1, 1, 20)), EDGE_DROP) << "a completed one is not ours to hand back";
+  const uint8_t via_us[] = {SELF[0], 0x94};
+  EXPECT_EQ(cls(p, trace(via_us, 2, 0, 12)), EDGE_STOCK) << "a trace naming us is relayed as always";
+  EXPECT_EQ(EdgePolicy().getTraceSnr(), EDGE_TRACE_SNR_OFF) << "nothing loaded";
+}
+
 TEST(EdgeTransparentTrace, AFreshLoudTraceNotNamingUsGoesThroughAQuietOneDoesNot) {
   auto p = validPolicy();
+  ASSERT_TRUE(p.setTraceSnr(EDGE_TRACE_SNR_ON));
   const uint8_t r1[] = {0x94};  // MeshMapper's trace mode: just the repeater it maps
   EXPECT_EQ(cls(p, trace(r1, 1, 0, 11.5)), EDGE_TRACE_THROUGH) << "an owner's, in the car";
-  EXPECT_EQ(cls(p, trace(r1, 1, 0, EDGE_TRACE_SNR_DEFAULT)), EDGE_TRACE_THROUGH) << "at the threshold";
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, EDGE_TRACE_SNR_ON)), EDGE_TRACE_THROUGH) << "at the threshold";
   EXPECT_EQ(cls(p, trace(r1, 1, 0, 2.0)), EDGE_DROP) << "quiet: not from inside the car";
   const uint8_t two[] = {0x94, 0x73};
   EXPECT_EQ(cls(p, trace(two, 2, 1, 12)), EDGE_DROP) << "already on its way, not to us: not ours to send";
@@ -153,6 +165,7 @@ TEST(EdgeTransparentTrace, AFreshLoudTraceNotNamingUsGoesThroughAQuietOneDoesNot
 
 TEST(EdgeTransparentTrace, ACompletedTraceIsACandidateToHandBack) {
   auto p = validPolicy();
+  ASSERT_TRUE(p.setTraceSnr(EDGE_TRACE_SNR_ON));
   const uint8_t r1[] = {0x94};
   EXPECT_EQ(cls(p, trace(r1, 1, 1, -3)), EDGE_TRACE_BACK) << "R1 sent it back with its SNR: done";
   const uint8_t three[] = {0x73, 0x94, 0x73};
@@ -163,6 +176,7 @@ TEST(EdgeTransparentTrace, ACompletedTraceIsACandidateToHandBack) {
 
 TEST(EdgeTransparentTrace, OffMeansTracesAreOnlyRelayedWhenNamed) {
   auto p = validPolicy();
+  ASSERT_TRUE(p.setTraceSnr(EDGE_TRACE_SNR_ON));
   ASSERT_TRUE(p.setTraceSnr(EDGE_TRACE_SNR_OFF));
   const uint8_t r1[] = {0x94};
   EXPECT_EQ(cls(p, trace(r1, 1, 0, 12)), EDGE_DROP);
@@ -202,14 +216,19 @@ static std::string traceSnr(EdgePolicy& p, const char* arg, bool* changed = null
 
 TEST(EdgeTransparentTrace, TheThresholdIsSetSavedAndRead) {
   auto p = validPolicy();
-  EXPECT_EQ(traceSnr(p, ""), "OK - transparent trace: traces heard at 6 dB or better");
+  EXPECT_EQ(traceSnr(p, ""), "OK - transparent trace off") << "off until turned on";
   bool changed;
+  EXPECT_EQ(traceSnr(p, "on", &changed), "OK - transparent trace: traces heard at 6 dB or better");
+  EXPECT_TRUE(changed);
+  EXPECT_EQ(p.getTraceSnr(), EDGE_TRACE_SNR_ON);
   EXPECT_EQ(traceSnr(p, "9", &changed), "OK - transparent trace: traces heard at 9 dB or better");
   EXPECT_TRUE(changed);
   EXPECT_EQ(traceSnr(p, "99", &changed).rfind("Err - trace_snr", 0), 0u);
   EXPECT_FALSE(changed);
   EXPECT_EQ(traceSnr(p, "9x").rfind("Err - trace_snr", 0), 0u);
   EXPECT_EQ(traceSnr(p, "127").rfind("Err - trace_snr", 0), 0u) << "off is spelled off";
+  EXPECT_EQ(traceSnr(p, "loud").rfind("Err - trace_snr", 0), 0u);
+  EXPECT_EQ(traceSnr(p, "on6").rfind("Err - trace_snr", 0), 0u);
   EXPECT_EQ(p.getTraceSnr(), 9) << "a bad value changes nothing";
   MockFS fs;
   ASSERT_TRUE(p.save(&fs));
@@ -224,14 +243,32 @@ TEST(EdgeTransparentTrace, TheThresholdIsSetSavedAndRead) {
   EXPECT_EQ(traceSnr(p, "-20"), "OK - transparent trace: traces heard at -20 dB or better");
   EdgePolicy d = validPolicy();
   ASSERT_TRUE(d.save(&fs));
-  EXPECT_EQ(fs.files[EDGE_POLICY_FILE].find("trace_snr"), std::string::npos) << "the default is not written";
+  EXPECT_NE(fs.files[EDGE_POLICY_FILE].find("trace_snr off\r\n"), std::string::npos)
+      << "off is written too: v0.4.0-beta.1 reads a missing line as on";
+  ASSERT_TRUE(d.setTraceSnr(EDGE_TRACE_SNR_ON));
+  ASSERT_TRUE(d.save(&fs));
+  EXPECT_NE(fs.files[EDGE_POLICY_FILE].find("trace_snr 6\r\n"), std::string::npos) << "and so is on";
+}
+
+TEST(EdgeTransparentTrace, AnOlderFileWithNoLineReadsAsOff) {
+  // v0.4.0-beta.1 left the line out at its default (on, 6 dB): such a file now reads as off.
+  MockFS fs;
+  auto p = validPolicy();
+  ASSERT_TRUE(p.save(&fs));
+  std::string& s = fs.files[EDGE_POLICY_FILE];
+  size_t at = s.find("trace_snr off\r\n");
+  ASSERT_NE(at, std::string::npos);
+  s.erase(at, strlen("trace_snr off\r\n"));
+  ASSERT_EQ(s.find("trace_snr"), std::string::npos);
+  EdgePolicy q;
   ASSERT_TRUE(q.load(&fs));
-  EXPECT_EQ(q.getTraceSnr(), EDGE_TRACE_SNR_DEFAULT) << "and a file without it reads as the default";
+  EXPECT_EQ(q.getTraceSnr(), EDGE_TRACE_SNR_OFF);
 }
 
 TEST(EdgeTransparentTrace, ABadThresholdInTheFileFailsClosed) {
   MockFS fs;
   auto p = validPolicy();
+  ASSERT_TRUE(p.setTraceSnr(9));  // read before the bad line: must not survive it
   ASSERT_TRUE(p.save(&fs));
   std::string good = fs.files[EDGE_POLICY_FILE];
   for (const char* bad : {"trace_snr 31\n", "trace_snr\n", "trace_snr x\n", "trace_snr 5 6\n"}) {
@@ -239,7 +276,7 @@ TEST(EdgeTransparentTrace, ABadThresholdInTheFileFailsClosed) {
     EdgePolicy q;
     EXPECT_FALSE(q.load(&fs)) << bad;
     EXPECT_FALSE(q.isValid()) << bad;
-    EXPECT_EQ(q.getTraceSnr(), EDGE_TRACE_SNR_DEFAULT) << bad << ": nothing half-read";
+    EXPECT_EQ(q.getTraceSnr(), EDGE_TRACE_SNR_OFF) << bad << ": nothing half-read, and off";
   }
 }
 

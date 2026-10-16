@@ -6,7 +6,7 @@ EdgePolicy::EdgePolicy() {
   _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
-  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
+  _trace_snr = EDGE_TRACE_SNR_OFF;  // transparent trace is off until turned on
   _valid = false;   // no policy loaded yet -> fail closed until load() succeeds
   _rl_start_ms = 0;
   _rl_count = 0;
@@ -323,7 +323,7 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   wardrive <2 hex chars of channel hash>
 //   mirror_adverts 0|1
 //   fwd_acks 0|1
-//   trace_snr <-20..30>|off  (transparent trace; absent means EDGE_TRACE_SNR_DEFAULT, and only then not written)
+//   trace_snr <-20..30>|off  (transparent trace; always written; absent (an older file) means off)
 // Any parse error invalidates the whole policy (fail closed).
 
 // The policy file and the stats file (EdgeStats.h) open the same way on every platform.
@@ -359,7 +359,7 @@ bool EdgePolicy::load(FILESYSTEM* fs) {
   _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
-  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
+  _trace_snr = EDGE_TRACE_SNR_OFF;
   return false;
 }
 
@@ -370,7 +370,7 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
   _num_wardrive = 0;
   _mirror_adverts = false;
   _fwd_acks = false;
-  _trace_snr = EDGE_TRACE_SNR_DEFAULT;
+  _trace_snr = EDGE_TRACE_SNR_OFF;
 
   File f = openEdgeRead(fs, EDGE_POLICY_FILE);
   if (!f) return false;
@@ -457,10 +457,11 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   f.println(_mirror_adverts ? "1" : "0");
   f.print("fwd_acks ");
   f.println(_fwd_acks ? "1" : "0");
-  // Written only when not the default, so a policy that never set it stays readable by firmware without it.
+  // Always written, `off` too: v0.4.0-beta.1 reads a missing line as on at 6 dB, so leaving it out would turn it
+  // back on after a flash back to that build. Firmware before it does not know the line and boots receive-only.
   if (_trace_snr == EDGE_TRACE_SNR_OFF) {
     f.println("trace_snr off");
-  } else if (_trace_snr != EDGE_TRACE_SNR_DEFAULT) {
+  } else {
     char db[16];
     snprintf(db, sizeof(db), "trace_snr %d", (int)_trace_snr);
     f.println(db);
@@ -534,8 +535,10 @@ bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_
   bool changed = false;
   if (arg[0]) {
     int8_t was = policy.getTraceSnr();
-    if (!policy.setTraceSnrText(arg)) {
-      snprintf(reply, cap, "Err - trace_snr <dB>: %d to %d, or off", EDGE_TRACE_SNR_MIN, EDGE_TRACE_SNR_MAX);
+    bool ok = strcmp(arg, "on") == 0 ? policy.setTraceSnr(EDGE_TRACE_SNR_ON) : policy.setTraceSnrText(arg);
+    if (!ok) {
+      snprintf(reply, cap, "Err - trace_snr <dB>: %d to %d, on (%d), or off", EDGE_TRACE_SNR_MIN, EDGE_TRACE_SNR_MAX,
+               EDGE_TRACE_SNR_ON);
       return false;
     }
     changed = policy.getTraceSnr() != was;
