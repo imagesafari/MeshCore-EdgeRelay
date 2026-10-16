@@ -41,8 +41,9 @@
 #define EDGE_TRACE_MAX         10
 #define EDGE_TRACE_WINDOW_MS   60000UL
 // Transparent trace: MeshMapper's trace mode on an owner's phone names only the repeater it maps, so the car is not
-// on the trace; a fresh trace heard at this SNR or better is taken as from inside the car (a trace names no sender).
-#define EDGE_TRACE_SNR_DEFAULT 6
+// on the trace; a fresh trace heard at the set SNR or better is taken as from inside the car (a trace names no
+// sender). Off until turned on; `edge trace_snr on` sets EDGE_TRACE_SNR_ON.
+#define EDGE_TRACE_SNR_ON      6
 #define EDGE_TRACE_SNR_MIN     (-20)
 #define EDGE_TRACE_SNR_MAX     30
 #define EDGE_TRACE_SNR_OFF     127
@@ -125,7 +126,9 @@ public:
   bool getFwdAcks() const { return _fwd_acks; }
   bool setTraceSnr(int db);  // EDGE_TRACE_SNR_MIN to EDGE_TRACE_SNR_MAX, or EDGE_TRACE_SNR_OFF
   int8_t getTraceSnr() const { return _trace_snr; }
-  // The same as text, as the policy file and `edge trace_snr` give it: "<dB>" or "off". False if not one.
+  // The same as text, as the policy file gives it: "<dB>" or "off". False if not one. `on` is the command's word
+  // only (edgeTraceSnrCommand turns it into EDGE_TRACE_SNR_ON): the file always holds a number, because
+  // v0.4.0-beta.1 reads the file with this same function and does not know `on`.
   bool setTraceSnrText(const char* text);
   uint8_t getNumOwners() const { return _num_owners; }
   uint8_t getNumChannels() const { return _num_channels; }
@@ -173,7 +176,8 @@ bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms);
 // flood. Direct: an owner's login, else an owner's direct packet.
 EdgeStat edgeSentStat(const mesh::Packet* pkt, bool wardrive_post);
 
-// `edge trace_snr [<dB>|off]`: sets the transparent trace threshold if `arg` is not empty, and says what it is.
+// `edge trace_snr [<dB>|on|off]`: sets the transparent trace threshold if `arg` is not empty (`on` is
+// EDGE_TRACE_SNR_ON), and says what it is.
 // True if it changed it (the caller saves the policy); a bad value is an Err reply and changes nothing.
 bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap);
 
