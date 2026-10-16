@@ -178,6 +178,7 @@ void loop() {
       userBtnDownAt = millis();
     } else if ((unsigned long)(millis() - userBtnDownAt) >= USER_BTN_HOLD_OFF_MILLIS) {
       Serial.println("Powering off...");
+      the_mesh.edgeSaveStats();  // the lifetime edge counts since the last save
       board.powerOff();  // does not return
     }
   } else {

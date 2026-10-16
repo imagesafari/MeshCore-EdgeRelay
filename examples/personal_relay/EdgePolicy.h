@@ -4,6 +4,7 @@
 #include <Mesh.h>
 #include <helpers/IdentityStore.h>   // FILESYSTEM
 #include "EdgeTrace.h"
+#include "EdgeStats.h"
 
 // Maximum number of owner identities (companion devices) this relay serves.
 #ifndef EDGE_MAX_OWNERS
@@ -43,6 +44,9 @@
 // Bytes of this node's public key prefix the callers hand to classify(): enough for any hop hash size.
 #define EDGE_SELF_HASH_MAX     8
 
+// A CLI reply, as the mesh carries one back to an admin: 159 characters and the terminator.
+#define EDGE_REPLY_MAX         160
+
 /**
  * Edge-relay packet policy.
  *
@@ -60,15 +64,6 @@ enum EdgeAction {
   EDGE_LOCAL_COPY,  // re-emit payload once as zero-hop direct; drop the original
   EDGE_DROP,        // drop the packet entirely
   EDGE_WARDRIVE_ECHO // an echo on a wardriving channel: hand down with its path if it is of a post we sent on
-};
-
-struct EdgePolicyStats {
-  uint32_t n_owner_uplink;  // owner floods forwarded via the stock path
-  uint32_t n_local_copy;    // inbound floods re-emitted as local zero-hop copies
-  uint32_t n_direct_fwd;    // owner-associated direct packets forwarded via stock
-  uint32_t n_trace_fwd;     // traces relayed (this node was the next hop on the trace's list)
-  uint32_t n_dropped;       // packets dropped by policy
-  uint32_t n_wardrive_echo; // echoes of our own wardriving uplinks handed down with their path
 };
 
 class EdgePolicy {
@@ -125,6 +120,9 @@ public:
   uint8_t getChannelHash(int i) const { return _channel_hashes[i]; }
 
   bool isOwnerHash(uint8_t h) const;
+  // The first owner whose key starts with this 1-byte hash, or nullptr (two owners can share a byte: the stats
+  // that use this name the first).
+  const uint8_t* ownerKeyByHash(uint8_t h) const;
   bool isOwnerPubkey(const uint8_t pubkey[PUB_KEY_SIZE]) const;
   bool isChannel(uint8_t h) const;
 
@@ -146,3 +144,16 @@ public:
   // Rate limiter: call once per wardrive echo about to be handed down.
   bool tryWardriveEcho(uint32_t now_ms);
 };
+
+// --- edge stats (EdgeStats.h) on the filesystem ---
+// Reads the lifetime counts from EDGE_STATS_FILE. No file, a half-written one or another firmware's: false, and
+// the lifetime counts are left as they were (zero at boot).
+bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats);
+// Writes them beside the file and renames that over it, so a failed write never costs the saved counts. Sets
+// saved_ms, save_failed (said on `edge stats life` and in the 0xC0 flags) and, on success, clears dirty.
+bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms);
+
+// `edge status`: the settings, then the totals since boot. The totals mean what they always did: up is owner
+// floods, wardriving posts and logins sent on; dfwd direct packets and receipts; trace both kinds; drop every
+// reason (`edge stats` has them apart). One reply over the mesh (EDGE_REPLY_MAX) at every count's largest.
+void edgeStatusReply(const EdgePolicy& policy, const EdgeStats& stats, char* reply, size_t cap);

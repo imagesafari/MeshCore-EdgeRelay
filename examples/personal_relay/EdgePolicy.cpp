@@ -28,6 +28,13 @@ bool EdgePolicy::isOwnerHash(uint8_t h) const {
   return false;
 }
 
+const uint8_t* EdgePolicy::ownerKeyByHash(uint8_t h) const {
+  for (int i = 0; i < _num_owners; i++) {
+    if (_owner_keys[i][0] == h) return _owner_keys[i];
+  }
+  return nullptr;
+}
+
 bool EdgePolicy::isOwnerPubkey(const uint8_t pubkey[PUB_KEY_SIZE]) const {
   for (int i = 0; i < _num_owners; i++) {
     if (memcmp(_owner_keys[i], pubkey, PUB_KEY_SIZE) == 0) return true;
@@ -296,25 +303,26 @@ EdgeAction EdgePolicy::classify(const mesh::Packet* pkt, const uint8_t* self_has
 //   fwd_acks 0|1
 // Any parse error invalidates the whole policy (fail closed).
 
-static File openPolicyRead(FILESYSTEM* fs) {
+// The policy file and the stats file (EdgeStats.h) open the same way on every platform.
+static File openEdgeRead(FILESYSTEM* fs, const char* path) {
 #if defined(RP2040_PLATFORM)
-  return fs->open(EDGE_POLICY_FILE, "r");
+  return fs->open(path, "r");
 #else
-  return fs->open(EDGE_POLICY_FILE);   // ESP32 default is read; NRF52 Adafruit default is FILE_O_READ
+  return fs->open(path);   // ESP32 default is read; NRF52 Adafruit default is FILE_O_READ
 #endif
 }
 
-static File openPolicyWrite(FILESYSTEM* fs) {
+static File openEdgeWrite(FILESYSTEM* fs, const char* path) {
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   // FILE_O_WRITE does not truncate: it opens read/write and seeks to the end,
   // so without the remove every save appended another copy of the policy and
   // load() stopped at the second "ER1" (same pattern as IdentityStore::save).
-  fs->remove(EDGE_POLICY_FILE);
-  return fs->open(EDGE_POLICY_FILE, FILE_O_WRITE);
+  fs->remove(path);
+  return fs->open(path, FILE_O_WRITE);
 #elif defined(RP2040_PLATFORM)
-  return fs->open(EDGE_POLICY_FILE, "w");
+  return fs->open(path, "w");
 #else
-  return fs->open(EDGE_POLICY_FILE, "w", true);
+  return fs->open(path, "w", true);
 #endif
 }
 
@@ -339,7 +347,7 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
   _mirror_adverts = false;
   _fwd_acks = false;
 
-  File f = openPolicyRead(fs);
+  File f = openEdgeRead(fs, EDGE_POLICY_FILE);
   if (!f) return false;
 
   char line[80];
@@ -397,7 +405,7 @@ bool EdgePolicy::parsePolicy(FILESYSTEM* fs) {
 }
 
 bool EdgePolicy::save(FILESYSTEM* fs) {
-  File f = openPolicyWrite(fs);
+  File f = openEdgeWrite(fs, EDGE_POLICY_FILE);
   if (!f) return false;
   f.println("ER1");
   char hex[PUB_KEY_SIZE * 2 + 1];
@@ -425,4 +433,52 @@ bool EdgePolicy::save(FILESYSTEM* fs) {
   f.close();
   _valid = true;
   return true;
+}
+
+bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats) {
+  File f = openEdgeRead(fs, EDGE_STATS_FILE);
+  if (!f) return false;
+  char text[EDGE_STATS_TEXT_MAX];
+  size_t n = 0;
+  int c;
+  while ((c = f.read()) >= 0) {
+    if (n + 1 >= sizeof(text)) {  // longer than any this firmware writes: not ours
+      f.close();
+      return false;
+    }
+    text[n++] = (char)c;
+  }
+  f.close();
+  text[n] = 0;
+  return stats.parse(text);
+}
+
+bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms) {
+  char text[EDGE_STATS_TEXT_MAX];
+  int n = stats.serialize(text, sizeof(text));
+  bool ok = n > 0;
+  if (ok) {
+    File f = openEdgeWrite(fs, EDGE_STATS_FILE_NEW);
+    ok = f && f.write((const uint8_t*)text, (size_t)n) == (size_t)n;
+    if (f) f.close();
+  }
+  if (ok && !fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE)) {
+    // LittleFS renames over a file; SPIFFS will not, so make room
+    fs->remove(EDGE_STATS_FILE);
+    ok = fs->rename(EDGE_STATS_FILE_NEW, EDGE_STATS_FILE);
+  }
+  if (!ok) fs->remove(EDGE_STATS_FILE_NEW);
+  stats.saved_ms = now_ms;    // a failed save is tried again at the next interval, not at once
+  stats.save_failed = !ok;    // said on `edge stats life` and in the 0xC0 flags, not kept quiet
+  if (ok) stats.dirty = false;
+  return ok;
+}
+
+void edgeStatusReply(const EdgePolicy& policy, const EdgeStats& stats, char* reply, size_t cap) {
+  const uint32_t* c = stats.boot;
+  snprintf(reply, cap, "OK - valid:%d owners:%d ch:%d up:%lu copy:%lu dfwd:%lu trace:%lu drop:%lu wd:%d wde:%lu",
+           policy.isValid() ? 1 : 0, policy.getNumOwners(), policy.getNumChannels(),
+           (unsigned long)(c[ES_UPLINK] + c[ES_WD_POST] + c[ES_LOGIN]), (unsigned long)c[ES_COPY],
+           (unsigned long)(c[ES_DIRECT] + c[ES_ACK]), (unsigned long)(c[ES_TRACE] + c[ES_TRACE_THROUGH]),
+           (unsigned long)stats.drops(false), policy.getNumWardrive(), (unsigned long)c[ES_WD_ECHO]);
 }
