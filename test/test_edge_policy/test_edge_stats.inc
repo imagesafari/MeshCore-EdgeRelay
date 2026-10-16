@@ -254,7 +254,8 @@ TEST(EdgeStatsFile, AMissingHalfWrittenOrOversizedFileIsNotUsed) {
   int n = a.serialize(text, sizeof(text));
   fs.files[EDGE_STATS_FILE] = std::string(text, n - 3);
   EXPECT_FALSE(edgeLoadStats(&fs, b)) << "cut short";
-  fs.files[EDGE_STATS_FILE] = std::string(EDGE_STATS_TEXT_MAX + 10, '1');
+  // good counts, then more than this firmware ever writes: not ours, though its start would parse
+  fs.files[EDGE_STATS_FILE] = std::string(text, n) + std::string(EDGE_STATS_TEXT_MAX, ' ');
   EXPECT_FALSE(edgeLoadStats(&fs, b)) << "larger than any this firmware writes";
   for (int i = 0; i < ES_COUNT; i++) EXPECT_EQ(b.life[i], 0u) << "nothing half-loaded";
 }
