@@ -140,10 +140,10 @@ TEST(EdgePolicyRules, ATraceNamingThisNodeIsRelayedEvenWithAnEmptyPath) {
 
 TEST(EdgeTransparentTrace, AFreshLoudTraceNotNamingUsGoesThroughAQuietOneDoesNot) {
   auto p = validPolicy();
-  const uint8_t kb8o[] = {0x94};  // MeshMapper's trace mode: just the repeater it maps
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 0, 11.5)), EDGE_TRACE_THROUGH) << "an owner's, in the car";
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 0, EDGE_TRACE_SNR_DEFAULT)), EDGE_TRACE_THROUGH) << "at the threshold";
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 0, 2.0)), EDGE_DROP) << "quiet: not from inside the car";
+  const uint8_t r1[] = {0x94};  // MeshMapper's trace mode: just the repeater it maps
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, 11.5)), EDGE_TRACE_THROUGH) << "an owner's, in the car";
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, EDGE_TRACE_SNR_DEFAULT)), EDGE_TRACE_THROUGH) << "at the threshold";
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, 2.0)), EDGE_DROP) << "quiet: not from inside the car";
   const uint8_t two[] = {0x94, 0x73};
   EXPECT_EQ(cls(p, trace(two, 2, 1, 12)), EDGE_DROP) << "already on its way, not to us: not ours to send";
   const uint8_t via_us[] = {SELF[0], 0x94};
@@ -152,8 +152,8 @@ TEST(EdgeTransparentTrace, AFreshLoudTraceNotNamingUsGoesThroughAQuietOneDoesNot
 
 TEST(EdgeTransparentTrace, ACompletedTraceIsACandidateToHandBack) {
   auto p = validPolicy();
-  const uint8_t kb8o[] = {0x94};
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 1, -3)), EDGE_TRACE_BACK) << "KB8O sent it back with its SNR: done";
+  const uint8_t r1[] = {0x94};
+  EXPECT_EQ(cls(p, trace(r1, 1, 1, -3)), EDGE_TRACE_BACK) << "R1 sent it back with its SNR: done";
   const uint8_t three[] = {0x73, 0x94, 0x73};
   EXPECT_EQ(cls(p, trace(three, 3, 3, 9)), EDGE_TRACE_BACK);
   EXPECT_TRUE(edgeTraceComplete(&static_cast<const Packet&>(trace(three, 3, 3))));
@@ -163,18 +163,18 @@ TEST(EdgeTransparentTrace, ACompletedTraceIsACandidateToHandBack) {
 TEST(EdgeTransparentTrace, OffMeansTracesAreOnlyRelayedWhenNamed) {
   auto p = validPolicy();
   ASSERT_TRUE(p.setTraceSnr(EDGE_TRACE_SNR_OFF));
-  const uint8_t kb8o[] = {0x94};
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 0, 12)), EDGE_DROP);
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 1, 12)), EDGE_DROP);
+  const uint8_t r1[] = {0x94};
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, 12)), EDGE_DROP);
+  EXPECT_EQ(cls(p, trace(r1, 1, 1, 12)), EDGE_DROP);
   EXPECT_FALSE(p.setTraceSnr(31));
   EXPECT_FALSE(p.setTraceSnr(-21));
 }
 
 TEST(EdgeTransparentTrace, AnInvalidPolicySendsNoTraceThrough) {
   EdgePolicy p;  // nothing loaded: fail closed
-  const uint8_t kb8o[] = {0x94};
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 0, 12)), EDGE_DROP);
-  EXPECT_EQ(cls(p, trace(kb8o, 1, 1, 12)), EDGE_DROP);
+  const uint8_t r1[] = {0x94};
+  EXPECT_EQ(cls(p, trace(r1, 1, 0, 12)), EDGE_DROP);
+  EXPECT_EQ(cls(p, trace(r1, 1, 1, 12)), EDGE_DROP);
 }
 
 TEST(EdgeTransparentTrace, TheRingHandsBackOnceInsideItsWindow) {
