@@ -1446,7 +1446,7 @@ void MyMesh::handleEdgeCommand(char* args, char* reply) {
     Serial.println("edge wardrive del <ch>       - remove wardriving channel, save");
     Serial.println("edge opt mirror_adverts 0|1  - remote advert mirroring, save");
     Serial.println("edge opt fwd_acks 0|1        - ACK forwarding, save");
-    Serial.println("edge trace_snr [<dB>|off]    - transparent trace threshold, -20 to 30 (default 6), save");
+    Serial.println("edge trace_snr [<dB>|on|off] - transparent trace threshold, -20 to 30, on = 6; off until on, save");
     strcpy(reply, "OK");
     return;
   }
