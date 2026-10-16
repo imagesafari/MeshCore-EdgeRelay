@@ -26,6 +26,7 @@ struct MockFS {
   std::map<std::string, std::string> files;
   bool fail_writes = false;       // a full or failing flash: files open, but nothing is written
   bool rename_overwrites = true;  // LittleFS does; SPIFFS refuses when the target exists
+  bool fail_renames = false;      // every rename fails (as if power went before it, or the flash refused it)
   MockFile open(const char* path, const char* mode = "r", bool /* create */ = false) {
     MockFile f;
     if (mode[0] == 'w') {
@@ -40,7 +41,7 @@ struct MockFS {
   bool mkdir(const char*) { return true; }
   bool remove(const char* path) { return files.erase(path) > 0; }
   bool rename(const char* from, const char* to) {
-    if (!files.count(from) || (!rename_overwrites && files.count(to))) return false;
+    if (fail_renames || !files.count(from) || (!rename_overwrites && files.count(to))) return false;
     files[to] = files[from];
     files.erase(from);
     return true;
@@ -239,6 +240,39 @@ TEST(EdgeTransparentTrace, ABadThresholdInTheFileFailsClosed) {
     EXPECT_FALSE(q.load(&fs)) << bad;
     EXPECT_FALSE(q.isValid()) << bad;
     EXPECT_EQ(q.getTraceSnr(), EDGE_TRACE_SNR_DEFAULT) << bad << ": nothing half-read";
+  }
+}
+
+static Packet sent(uint8_t route, uint8_t type, uint8_t hops) {
+  Packet p;
+  p.header = route | (type << PH_TYPE_SHIFT);
+  p.setPathHashSizeAndCount(1, hops);
+  p.payload[0] = CHAN;
+  p.payload[1] = OWNER;
+  p.payload_len = 2;
+  return p;
+}
+
+TEST(EdgeSentStat, EachPacketSentOnIsCountedByItsKind) {
+  Packet up = sent(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_TXT_MSG, 0);
+  EXPECT_EQ(edgeSentStat(&up, false), ES_UPLINK);
+  Packet post = sent(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, 0);
+  EXPECT_EQ(edgeSentStat(&post, false), ES_UPLINK) << "a post on an opted-in channel";
+  EXPECT_EQ(edgeSentStat(&post, true), ES_WD_POST);
+  Packet login = sent(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_ANON_REQ, 0);
+  EXPECT_EQ(edgeSentStat(&login, false), ES_LOGIN);
+  Packet dlogin = sent(ROUTE_TYPE_DIRECT, PAYLOAD_TYPE_ANON_REQ, 1);
+  EXPECT_EQ(edgeSentStat(&dlogin, false), ES_LOGIN) << "a login routed through the car is a login, not dfwd";
+  Packet direct = sent(ROUTE_TYPE_DIRECT, PAYLOAD_TYPE_TXT_MSG, 1);
+  EXPECT_EQ(edgeSentStat(&direct, false), ES_DIRECT);
+}
+
+TEST(EdgeSentStat, AFloodReceiptSentOnWithFwdAcksIsAReceiptNotAnUplink) {
+  for (uint8_t hops : {0, 3}) {
+    Packet ack = sent(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_ACK, hops);
+    EXPECT_EQ(edgeSentStat(&ack, false), ES_ACK) << (int)hops << " hops";
+    Packet tack = sent(ROUTE_TYPE_TRANSPORT_FLOOD, PAYLOAD_TYPE_ACK, hops);
+    EXPECT_EQ(edgeSentStat(&tack, false), ES_ACK) << (int)hops << " hops, scoped";
   }
 }
 

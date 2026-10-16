@@ -166,6 +166,11 @@ bool edgeLoadStats(FILESYSTEM* fs, EdgeStats& stats);
 // saved_ms, save_failed (said on `edge stats life` and in the 0xC0 flags) and, on success, clears dirty.
 bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms);
 
+// The counter for a packet stock is about to send on (not a trace or a direct receipt: those are counted where
+// their rate limits are taken). Floods: a wardriving post, an owner's login, a receipt (fwd_acks), else an owner's
+// flood. Direct: an owner's login, else an owner's direct packet.
+EdgeStat edgeSentStat(const mesh::Packet* pkt, bool wardrive_post);
+
 // `edge trace_snr [<dB>|off]`: sets the transparent trace threshold if `arg` is not empty, and says what it is.
 // True if it changed it (the caller saves the policy); a bad value is an Err reply and changes nothing.
 bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap);

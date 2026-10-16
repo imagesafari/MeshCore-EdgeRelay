@@ -474,16 +474,17 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   // A wardriving post going out (every gate above passed: region, hop limit, loop): its echoes may come back
   // down (handWardriveEchoDown). Remembered here, not on receipt, so a post we do not send on never is.
   uint8_t pt = packet->getPayloadType();
-  if (packet->isRouteFlood() && packet->getPathHashCount() == 0 &&
-      (pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && edge_policy.isWardrive(packet->payload[0])) {
+  bool wardrive_post = packet->isRouteFlood() && packet->getPathHashCount() == 0 &&
+      (pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && edge_policy.isWardrive(packet->payload[0]);
+  if (wardrive_post) {
     uint8_t key[MAX_HASH_SIZE];
     packet->calculatePacketHash(key);
     wardrive_ring.remember(key, millis());
-    edge_stats.add(ES_WD_POST);
-  } else if (packet->isRouteFlood()) {
+  }
+  if (packet->isRouteFlood()) {
     // A flood sent on: stock asks once per packet (Mesh::routeRecvPacket, after its seen-check). Direct packets,
-    // receipts and traces are counted in onRecvPacket().
-    edge_stats.add(pt == PAYLOAD_TYPE_ANON_REQ ? ES_LOGIN : ES_UPLINK);
+    // direct receipts and traces are counted in onRecvPacket().
+    edge_stats.add(edgeSentStat(packet, wardrive_post));
     edgeCountOwner(packet);
   }
   return true;
@@ -695,7 +696,7 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
       // have passed every check (region, hop limit, loop) and are about to go out.
       if (getTables()->wasSeen(pkt)) return ACTION_RELEASE;
       if (!_prefs.disable_fwd) {
-        edge_stats.add(pkt->getPayloadType() == PAYLOAD_TYPE_ANON_REQ ? ES_LOGIN : ES_DIRECT);
+        edge_stats.add(edgeSentStat(pkt, false));
         edgeCountOwner(pkt);
       }
     }

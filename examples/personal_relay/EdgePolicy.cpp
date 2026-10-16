@@ -509,6 +509,14 @@ bool edgeSaveStats(FILESYSTEM* fs, EdgeStats& stats, uint32_t now_ms) {
   return ok;
 }
 
+EdgeStat edgeSentStat(const mesh::Packet* pkt, bool wardrive_post) {
+  uint8_t pt = pkt->getPayloadType();
+  if (pt == PAYLOAD_TYPE_ANON_REQ) return ES_LOGIN;
+  if (!pkt->isRouteFlood()) return ES_DIRECT;
+  if (wardrive_post) return ES_WD_POST;
+  return pt == PAYLOAD_TYPE_ACK ? ES_ACK : ES_UPLINK;
+}
+
 bool edgeTraceSnrCommand(EdgePolicy& policy, const char* arg, char* reply, size_t cap) {
   bool changed = false;
   if (arg[0]) {
