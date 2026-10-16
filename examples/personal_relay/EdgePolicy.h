@@ -126,7 +126,9 @@ public:
   bool getFwdAcks() const { return _fwd_acks; }
   bool setTraceSnr(int db);  // EDGE_TRACE_SNR_MIN to EDGE_TRACE_SNR_MAX, or EDGE_TRACE_SNR_OFF
   int8_t getTraceSnr() const { return _trace_snr; }
-  // The same as text, as the policy file and `edge trace_snr` give it: "<dB>" or "off". False if not one.
+  // The same as text, as the policy file gives it: "<dB>" or "off". False if not one. `on` is the command's word
+  // only (edgeTraceSnrCommand turns it into EDGE_TRACE_SNR_ON): the file always holds a number, because
+  // v0.4.0-beta.1 reads the file with this same function and does not know `on`.
   bool setTraceSnrText(const char* text);
   uint8_t getNumOwners() const { return _num_owners; }
   uint8_t getNumChannels() const { return _num_channels; }

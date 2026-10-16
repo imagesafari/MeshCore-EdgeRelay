@@ -248,6 +248,9 @@ TEST(EdgeTransparentTrace, TheThresholdIsSetSavedAndRead) {
   ASSERT_TRUE(d.setTraceSnr(EDGE_TRACE_SNR_ON));
   ASSERT_TRUE(d.save(&fs));
   EXPECT_NE(fs.files[EDGE_POLICY_FILE].find("trace_snr 6\r\n"), std::string::npos) << "and so is on";
+  EdgePolicy back;
+  ASSERT_TRUE(back.load(&fs));
+  EXPECT_EQ(back.getTraceSnr(), EDGE_TRACE_SNR_ON) << "on survives a save and reload";
 }
 
 TEST(EdgeTransparentTrace, AnOlderFileWithNoLineReadsAsOff) {
