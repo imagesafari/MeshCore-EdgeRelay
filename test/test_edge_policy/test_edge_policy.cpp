@@ -256,10 +256,10 @@ TEST(EdgeTransparentTrace, AnOlderFileWithNoLineReadsAsOff) {
   auto p = validPolicy();
   ASSERT_TRUE(p.save(&fs));
   std::string& s = fs.files[EDGE_POLICY_FILE];
-  size_t at = s.find("trace_snr off\r\n");
-  ASSERT_NE(at, std::string::npos);
-  s.erase(at, strlen("trace_snr off\r\n"));
+  size_t at = s.find("trace_snr ");
+  if (at != std::string::npos) s.erase(at, s.find('\n', at) + 1 - at);
   ASSERT_EQ(s.find("trace_snr"), std::string::npos);
+  ASSERT_NE(s.find("owner "), std::string::npos) << "the rest of the file is kept";
   EdgePolicy q;
   ASSERT_TRUE(q.load(&fs));
   EXPECT_EQ(q.getTraceSnr(), EDGE_TRACE_SNR_OFF);
