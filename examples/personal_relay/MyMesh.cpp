@@ -648,12 +648,19 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
             // Preserve payload bytes and type exactly; sendZeroHop() reframes the
             // route as DIRECT with an empty path, so neighboring repeaters neither
             // forward it nor learn paths from it. The companion still sees the
-            // original sender (this node never re-signs or re-encrypts).
+            // original sender (this node never re-signs or re-encrypts). An advert goes
+            // as a Share, or every repeater near us lists its sender as a neighbour
+            // (edgeCopyAsShare).
             copy->header = pkt->header;
             copy->transport_codes[0] = copy->transport_codes[1] = 0;
             copy->payload_len = pkt->payload_len;
             memcpy(copy->payload, pkt->payload, pkt->payload_len);
-            sendZeroHop(copy, getRetransmitDelay(copy));
+            if (edgeCopyAsShare(copy->getPayloadType())) {
+              uint16_t share[2] = {0, 0};  // { 0, 0 }: 'send this nowhere' (BaseChatMesh::shareContactZeroHop)
+              sendZeroHop(copy, share, getRetransmitDelay(copy));
+            } else {
+              sendZeroHop(copy, getRetransmitDelay(copy));
+            }
             edge_stats.add(ES_COPY);
           } else {
             MESH_DEBUG_PRINTLN("edge: packet pool empty, local copy dropped");
