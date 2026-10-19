@@ -26,6 +26,13 @@
 // Local-copy rate limit: at most this many zero-hop copies per window.
 #define EDGE_LOCAL_COPY_MAX    30
 #define EDGE_LOCAL_COPY_WINDOW_MS  60000UL
+// A local copy carries the original's packet hash, so a repeater that hears the copy before the flood takes the
+// flood for one it has seen and does not repeat it: sent at once, a copy could stop a flood spreading past the
+// repeaters near this node. Held this long (plus up to a quarter more, so two relays do not collide), the repeaters
+// around have heard the flood first.
+#ifndef EDGE_COPY_HOLD_MS
+#define EDGE_COPY_HOLD_MS  3000UL
+#endif
 
 // Wardrive echo rate limit (EdgeWardrive.h): its own budget, so wardriving never starves owner local copies.
 #define EDGE_WARDRIVE_ECHO_RATE_MAX  24

@@ -655,11 +655,13 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
             copy->transport_codes[0] = copy->transport_codes[1] = 0;
             copy->payload_len = pkt->payload_len;
             memcpy(copy->payload, pkt->payload, pkt->payload_len);
+            // held, so the repeaters around hear the flood before its copy (EDGE_COPY_HOLD_MS)
+            uint32_t hold = EDGE_COPY_HOLD_MS + (uint32_t)getRNG()->nextInt(0, (int)(EDGE_COPY_HOLD_MS / 4) + 1);
             if (edgeCopyAsShare(copy->getPayloadType())) {
               uint16_t share[2] = {0, 0};  // { 0, 0 }: 'send this nowhere' (BaseChatMesh::shareContactZeroHop)
-              sendZeroHop(copy, share, getRetransmitDelay(copy));
+              sendZeroHop(copy, share, hold);
             } else {
-              sendZeroHop(copy, getRetransmitDelay(copy));
+              sendZeroHop(copy, hold);
             }
             edge_stats.add(ES_COPY);
           } else {
