@@ -75,6 +75,15 @@ enum EdgeAction {
   EDGE_TRACE_BACK     // a completed trace: hand it back down as heard, if it is one we sent on (EdgeTraceRing)
 };
 
+/**
+ * Whether a zero-hop local copy goes out as a Share (TRANSPORT_DIRECT with transport codes {0, 0}, as stock
+ * BaseChatMesh::shareContactZeroHop sends one). An advert must: a stock repeater puts every zero-hop repeater advert
+ * it hears in its neighbour table unless it is a Share (simple_repeater MyMesh::onAdvertRecv, isShare), so a plain
+ * copy of a far repeater's advert listed it as a neighbour of every repeater near this node, at this node's SNR.
+ * A companion takes an advert in whatever its route, so it still learns the node. Other copies stay plain.
+ */
+inline bool edgeCopyAsShare(uint8_t payload_type) { return payload_type == PAYLOAD_TYPE_ADVERT; }
+
 class EdgePolicy {
   uint8_t _owner_keys[EDGE_MAX_OWNERS][PUB_KEY_SIZE];
   uint8_t _num_owners;

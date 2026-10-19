@@ -316,6 +316,15 @@ TEST(EdgeSentStat, AFloodReceiptSentOnWithFwdAcksIsAReceiptNotAnUplink) {
   }
 }
 
+// A mirrored advert goes as a Share, which stock repeaters keep out of their neighbour tables; nothing else does
+TEST(EdgeCopy, OnlyAnAdvertGoesAsAShare) {
+  EXPECT_TRUE(edgeCopyAsShare(PAYLOAD_TYPE_ADVERT));
+  for (uint8_t t : {PAYLOAD_TYPE_GRP_TXT, PAYLOAD_TYPE_TXT_MSG, PAYLOAD_TYPE_ACK, PAYLOAD_TYPE_REQ, PAYLOAD_TYPE_RESPONSE,
+                    PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_TRACE, PAYLOAD_TYPE_ANON_REQ}) {
+    EXPECT_FALSE(edgeCopyAsShare(t)) << "payload type " << (int)t;
+  }
+}
+
 #include "test_edge_stats.inc"
 
 int main(int argc, char** argv) {
